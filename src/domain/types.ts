@@ -11,6 +11,7 @@ export enum SlipLifecycleStatus {
 // ─── Review state ─────────────────────────────────────────────
 export enum ReviewState {
   Pending = "pending",
+  Parsed = "parsed",
   NeedsReview = "needs_review",
   Ready = "ready",
   Approved = "approved",
@@ -42,7 +43,42 @@ export enum CurrencyCode {
   Unknown = "UNKNOWN",
 }
 
-// ─── Parsed slip result ──────────────────────────────────────
+// ─── Parser run status ───────────────────────────────────────
+export enum ParserRunStatus {
+  Success = "success",
+  Partial = "partial",
+  Failed = "failed",
+}
+
+// ─── Parser field confidence ─────────────────────────────────
+export interface FieldConfidence {
+  /** Whether the parser considers this field uncertain */
+  uncertain: boolean;
+  /** Human-readable reason if uncertain */
+  reason?: string;
+}
+
+// ─── Parser result ───────────────────────────────────────────
+export interface ParseResult {
+  /** Parsed transaction date in YYYY-MM-DD format */
+  date: string | null;
+  /** Parsed amount as exact decimal string (e.g. "123.45") */
+  amount: string | null;
+  /** ISO 4217 currency code */
+  currency: string | null;
+  /** Raw merchant name as extracted by the parser */
+  parsedMerchant: string | null;
+  /** Bank-side transaction reference / identifier */
+  sourceIdentifier: string | null;
+  /** Parser confidence assessment */
+  confidence: "high" | "medium" | "low";
+  /** Per-field uncertainty info */
+  uncertainties: Record<string, FieldConfidence>;
+  /** Overall status of this parse attempt */
+  status: ParserRunStatus;
+}
+
+// ─── Parsed slip result (domain-level, after validation) ─────
 export interface ParsedSlip {
   /** Absolute path to the original image file */
   sourcePath: string;
@@ -50,8 +86,8 @@ export interface ParsedSlip {
   contentHash: string;
   /** Parsed transaction date in YYYY-MM-DD format */
   date: string | null;
-  /** Parsed amount in minor units (e.g. 123.45) */
-  amount: number | null;
+  /** Parsed amount as exact decimal string (e.g. "123.45") */
+  amount: string | null;
   /** ISO 4217 currency code */
   currency: CurrencyCode;
   /** Raw merchant name as extracted by the parser */
@@ -62,6 +98,8 @@ export interface ParsedSlip {
   destinationAccountName: string | null;
   /** Bank-side transaction reference / identifier */
   sourceIdentifier: string | null;
+  /** Whether any field has unresolved uncertainty */
+  hasUncertainty: boolean;
 }
 
 // ─── Draft transaction awaiting review / sync ────────────────
@@ -74,8 +112,8 @@ export interface DraftTransaction {
   contentHash: string;
   /** Parsed / user-confirmed transaction date */
   date: string;
-  /** Transaction amount */
-  amount: number;
+  /** Transaction amount as exact decimal string */
+  amount: string;
   /** ISO 4217 currency code */
   currency: CurrencyCode;
   /** Normalized merchant name (used as Firefly destination) */
@@ -87,7 +125,7 @@ export interface DraftTransaction {
   /** Firefly source asset account name */
   sourceAccountName: string | null;
   /** Firefly category name */
-  category: string;
+  category: string | null;
   /** Review state */
   reviewState: ReviewState;
   /** Sync state */
