@@ -1,5 +1,5 @@
-import { statSync, readFileSync, existsSync } from "node:fs";
-import { resolve, relative } from "node:path";
+import { statSync, readFileSync, existsSync, realpathSync } from "node:fs";
+import { resolve, relative, basename } from "node:path";
 import { Database } from "bun:sqlite";
 import type { AppConfig } from "../../config";
 import { openDatabase } from "../../db/client";
@@ -21,6 +21,34 @@ const EXTENSION_MIME: Record<string, string> = {
 const ALLOWED_EXTENSIONS = new Set(Object.keys(EXTENSION_MIME));
 
 /**
+ * Minimum magic bytes validation for formats that have well-known signatures.
+ * HEIC/HEIF support is extension-only (no magic check) due to format complexity.
+ *
+ * Each entry: [extension byte offset, expected bytes as Uint8Array]
+ */
+const MAGIC_BYTES: Record<string, Uint8Array> = {
+  ".jpg": new Uint8Array([0xff, 0xd8, 0xff]),
+  ".jpeg": new Uint8Array([0xff, 0xd8, 0xff]),
+  ".png": new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
+  ".webp": new Uint8Array([0x52, 0x49, 0x46, 0x46]), // "RIFF" — but for simplicity check start of WebP file after RIFF+size
+};
+
+/**
+ * Validate magic bytes of file content.
+ * Returns true if the file's first bytes match the expected signature for the extension.
+ * HEIC/HEIF skip magic validation (extension-only).
+ */
+function validateMagicBytes(filePath: string, ext: string, content: Buffer): boolean {
+  const expected = MAGIC_BYTES[ext];
+  if (!expected) return true; // HEIC/HEIF — extension-only, skip magic check
+  if (content.length < expected.length) return false;
+  for (let i = 0; i < expected.length; i++) {
+    if (content[i] !== expected[i]) return false;
+  }
+  return true;
+}
+
+/**
  * GET /slips/:id/image
  *
  * Serve the original raw slip image. Read-only — never writes to the raw folder.
@@ -28,8 +56,12 @@ const ALLOWED_EXTENSIONS = new Set(Object.keys(EXTENSION_MIME));
  * Security:
  * - Resolves the slip's sourcePath against SLIPS_RAW_DIR
  * - Verifies the resolved path is strictly inside SLIPS_RAW_DIR (path traversal guard)
+ * - Resolves symlinks and verifies real path is inside raw dir's real path
  * - Only serves files with allowed image extensions
- * - Returns 404 for missing files, 400 for path traversal, 415 for bad extension
+ * - Validates magic bytes for jpg/jpeg/png/webp
+ * - Sets X-Content-Type-Options: nosniff
+ * - Returns 404 for missing files, 400 for path traversal, 415 for bad extension,
+ *   403 for symlink escape, 422 for content-type mismatch
  */
 export function slipImageHandler(config: AppConfig) {
   return async (context: { params: { id: string } }): Promise<Response> => {
@@ -59,7 +91,7 @@ export function slipImageHandler(config: AppConfig) {
 }
 
 /**
- * Serve an image file with path traversal protection.
+ * Serve an image file with path traversal and symlink protection.
  * Extracted as a pure function for testability.
  */
 export function serveImage(slipsRawDir: string, sourcePath: string): Response {
@@ -83,14 +115,29 @@ export function serveImage(slipsRawDir: string, sourcePath: string): Response {
     );
   }
 
-  // Check file exists
+  // Check file exists before symlink resolution
   if (!existsSync(absPath)) {
     return new Response("Image file not found", { status: 404 });
   }
 
+  // Symlink escape guard: resolve symlinks and verify real path is inside raw dir
+  let realPath: string;
+  let rawDirReal: string;
+  try {
+    realPath = realpathSync(absPath);
+    rawDirReal = realpathSync(absRawDir);
+  } catch {
+    return new Response("Cannot resolve file path", { status: 400 });
+  }
+
+  const realRel = relative(rawDirReal, realPath);
+  if (realRel.startsWith("..") || realRel === "" || resolve(rawDirReal, realRel) !== realPath) {
+    return new Response("Symlink target is outside the allowed directory", { status: 403 });
+  }
+
   // Verify it's a file (not a directory)
   try {
-    const st = statSync(absPath);
+    const st = statSync(realPath);
     if (!st.isFile()) {
       return new Response("Not a valid image file", { status: 400 });
     }
@@ -98,15 +145,27 @@ export function serveImage(slipsRawDir: string, sourcePath: string): Response {
     return new Response("Cannot read image file", { status: 404 });
   }
 
-  // Read and serve the file
+  // Read and validate the file
   try {
-    const content = readFileSync(absPath);
+    const content = readFileSync(realPath);
+
+    // Magic bytes validation (skip for HEIC/HEIF — extension-only)
+    if (!validateMagicBytes(realPath, ext, content)) {
+      return new Response(
+        `File content does not match expected format for "${ext}"`,
+        { status: 422 },
+      );
+    }
+
+    const fileName = basename(sourcePath);
     return new Response(content, {
       status: 200,
       headers: {
         "content-type": mimeType,
         "cache-control": "private, max-age=3600",
         "content-length": String(content.length),
+        "x-content-type-options": "nosniff",
+        "content-disposition": `inline; filename="${fileName}"`,
       },
     });
   } catch (err) {
