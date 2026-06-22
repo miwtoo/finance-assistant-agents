@@ -4,6 +4,7 @@ import type { AppConfig } from "./config";
 import type { ParserProvider } from "./domain/parserTypes";
 import { cloudflareAccessGuard } from "./web/middleware/cloudflareAccess";
 import { candidatesPageHandler } from "./web/routes/candidates";
+import { slipImageHandler } from "./web/routes/imageProxy";
 import {
   parseSlipHandler,
   createManualDraftHandler,
@@ -40,6 +41,9 @@ export function createApp(config = loadConfig(), opts?: CreateAppOptions) {
 
   // Candidates page (existing)
   app.get("/candidates", candidatesPageHandler(config));
+
+  // Raw slip image proxy (read-only, security-guarded)
+  app.get("/slips/:id/image", slipImageHandler(config));
 
   // Draft API routes
   const provider = opts?.parserProvider ?? createNullParser();

@@ -127,6 +127,19 @@ export function getSlipById(db: Database, id: number): SlipRecord | null {
   return row ? mapRow(row) : null;
 }
 
+/** Update the parse_status and lifecycle_status on a slip record. */
+export function updateSlipParseStatus(
+  db: Database,
+  slipId: number,
+  parseStatus: string,
+  lifecycleStatus: string,
+): void {
+  db.run(
+    `UPDATE slips SET parse_status = ?, lifecycle_status = ?, updated_at = datetime('now') WHERE id = ?`,
+    [parseStatus, lifecycleStatus, slipId],
+  );
+}
+
 function mapRow(row: Record<string, unknown>): SlipRecord {
   return {
     id: row.id as number,

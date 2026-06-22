@@ -3,8 +3,15 @@ import type { AppConfig } from "../../config";
 import { openDatabase } from "../../db/client";
 import { initSlipsTable, upsertSlipRecord, getSlipsByPaths } from "../../db/slips";
 import type { SlipRecord } from "../../db/slips";
+import { initDraftsTable, getDraftBySlipId, getAllDrafts } from "../../db/drafts";
 import { discoverSlipCandidates, type ScanOptions } from "../../domain/slipScanner";
 import type { SlipCandidate } from "../../domain/slipScanner";
+
+interface SlipRow extends SlipRecord {
+  draftId: number | null;
+  draftReviewState: string | null;
+  draftSyncState: string | null;
+}
 
 /**
  * GET /candidates handler.
@@ -17,6 +24,11 @@ import type { SlipCandidate } from "../../domain/slipScanner";
  * an HTML page showing only the current scan results with status badges,
  * duplicate-risk indicators, parse status, scan/loading affordance, and
  * error handling.
+ *
+ * Each row includes:
+ * - Parse action button (POST /candidates/:id/parse)
+ * - Draft link if a draft exists for the slip
+ * - Image link to view the raw slip
  */
 export function candidatesPageHandler(config: AppConfig) {
   return async (context: {
@@ -27,6 +39,7 @@ export function candidatesPageHandler(config: AppConfig) {
     try {
       db = openDatabase(config.dbPath);
       initSlipsTable(db);
+      initDraftsTable(db);
 
       // Parse optional date-range query params
       const scanOptions = parseScanOptions(context.query);
@@ -47,8 +60,19 @@ export function candidatesPageHandler(config: AppConfig) {
 
       // Query only the current scan results (not all historical records)
       const currentPaths = candidates.map((c) => c.sourcePath);
-      const records =
-        currentPaths.length > 0 ? getSlipsByPaths(db, currentPaths) : [];
+      const safeDb = db!; // guaranteed non-null from open + init above
+      const records: SlipRow[] =
+        currentPaths.length > 0
+          ? (getSlipsByPaths(safeDb, currentPaths) as SlipRow[]).map((r) => {
+              const draft = getDraftBySlipId(safeDb, r.id);
+              return {
+                ...r,
+                draftId: draft?.id ?? null,
+                draftReviewState: draft?.reviewState ?? null,
+                draftSyncState: draft?.syncState ?? null,
+              };
+            })
+          : [];
 
       const html = renderCandidatesPage(records, scanError, scanOptions);
       return new Response(html, {
@@ -89,7 +113,7 @@ function parseScanOptions(query: Record<string, string | undefined>): ScanOption
 }
 
 function renderCandidatesPage(
-  records: SlipRecord[],
+  records: SlipRow[],
   scanError: string | null,
   scanOptions?: ScanOptions,
 ): string {
@@ -97,12 +121,16 @@ function renderCandidatesPage(
     .map(
       (r) => `
       <tr>
-        <td>${escapeHtml(r.sourcePath)}</td>
-        <td>${escapeHtml(r.contentHash ?? "—")}</td>
-        <td>${escapeHtml(r.mtime ?? "—")}</td>
+        <td>
+          <a href="/slips/${r.id}/image" target="_blank" rel="noopener">${escapeHtml(basename(r.sourcePath))}</a>
+          <br><small>${escapeHtml(r.sourcePath)}</small>
+        </td>
         <td><span class="status status-${r.lifecycleStatus}">${escapeHtml(r.lifecycleStatus)}</span></td>
         <td>${escapeHtml(r.parseStatus)}</td>
         <td>${r.duplicateRisk ? '<span class="badge badge-risk">⚠ Duplicate Risk</span>' : ""}</td>
+        <td>
+          ${renderActions(r)}
+        </td>
         <td>${r.scanError ? escapeHtml(r.scanError) : ""}</td>
       </tr>`,
     )
@@ -128,7 +156,14 @@ function renderCandidatesPage(
     tr:hover { background: #f0f8ff; }
     .status { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.8rem; font-weight: 500; }
     .status-discovered { background: #e3f2fd; color: #1565c0; }
+    .status-parsed { background: #e8f5e9; color: #2e7d32; }
+    .status-parse_failed { background: #ffebee; color: #c62828; }
+    .status-skipped { background: #f5f5f5; color: #757575; }
     .badge-risk { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.8rem; background: #fff3e0; color: #e65100; font-weight: 600; }
+    .badge-draft { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.8rem; background: #e8f5e9; color: #2e7d32; font-weight: 500; }
+    .btn { display: inline-block; padding: 0.25rem 0.6rem; border-radius: 4px; font-size: 0.8rem; text-decoration: none; cursor: pointer; border: 1px solid #ccc; background: #fff; color: #333; }
+    .btn-primary { background: #1565c0; color: #fff; border-color: #1565c0; }
+    .btn-small { font-size: 0.75rem; padding: 0.15rem 0.4rem; }
     .empty { text-align: center; padding: 3rem; color: #888; }
     .error-banner { background: #ffebee; color: #c62828; padding: 1rem; border-radius: 4px; margin-bottom: 1rem; }
     .scan-bar { margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem; }
@@ -136,6 +171,7 @@ function renderCandidatesPage(
     .scan-bar .loading { display: none; }
     .scan-bar.scanning button { display: none; }
     .scan-bar.scanning .loading { display: inline; }
+    .actions { display: flex; gap: 0.3rem; flex-wrap: wrap; align-items: center; }
   </style>
 </head>
 <body>
@@ -155,12 +191,11 @@ function renderCandidatesPage(
   ${records.length > 0 ? `<table>
     <thead>
       <tr>
-        <th>Path</th>
-        <th>Content Hash</th>
-        <th>Modified</th>
+        <th>File</th>
         <th>Status</th>
-        <th>Parse Status</th>
-        <th>Duplicate Risk</th>
+        <th>Parse</th>
+        <th>Risk</th>
+        <th>Actions</th>
         <th>Error</th>
       </tr>
     </thead>
@@ -174,9 +209,59 @@ function renderCandidatesPage(
         window.location.reload();
       }, 200);
     }
+    async function parseSlip(slipId) {
+      try {
+        const res = await fetch('/candidates/' + slipId + '/parse', { method: 'POST' });
+        const data = await res.json();
+        if (data.ok && data.draftId) {
+          window.location.href = '/drafts/' + data.draftId;
+        } else {
+          alert('Parse result: ' + (data.message || 'unknown'));
+          window.location.reload();
+        }
+      } catch (e) {
+        alert('Parse error: ' + e.message);
+        window.location.reload();
+      }
+    }
+    async function createManualDraft(slipId) {
+      try {
+        const res = await fetch('/candidates/' + slipId + '/create-draft', { method: 'POST' });
+        const data = await res.json();
+        if (data.ok && data.draftId) {
+          window.location.href = '/drafts/' + data.draftId;
+        } else {
+          alert('Error: ' + (data.message || 'unknown'));
+          window.location.reload();
+        }
+      } catch (e) {
+        alert('Error: ' + e.message);
+        window.location.reload();
+      }
+    }
   </script>
 </body>
 </html>`;
+}
+
+function renderActions(r: SlipRow): string {
+  const parts: string[] = [];
+
+  // Image link (always available)
+  parts.push(`<a href="/slips/${r.id}/image" target="_blank" class="btn btn-small">🔍 View</a>`);
+
+  // Draft link if draft exists
+  if (r.draftId) {
+    const stateLabel = r.draftReviewState === "ready" ? "✅ Ready" : r.draftReviewState === "needs_review" ? "🔧 Needs Review" : r.draftReviewState ?? "Draft";
+    parts.push(`<a href="/drafts/${r.draftId}" class="btn btn-small badge-draft">${stateLabel}</a>`);
+  } else {
+    // Parse trigger button
+    parts.push(`<button onclick="parseSlip(${r.id})" class="btn btn-small btn-primary">Parse</button>`);
+    // Manual draft button (alternative)
+    parts.push(`<button onclick="createManualDraft(${r.id})" class="btn btn-small">Manual</button>`);
+  }
+
+  return `<div class="actions">${parts.join(" ")}</div>`;
 }
 
 function escapeHtml(s: string): string {
@@ -186,4 +271,9 @@ function escapeHtml(s: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+function basename(p: string): string {
+  const idx = p.lastIndexOf("/");
+  return idx >= 0 ? p.slice(idx + 1) : p;
 }

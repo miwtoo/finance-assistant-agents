@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import type { ParserProvider } from "../../domain/parserTypes";
 import type { AppConfig } from "../../config";
 import { openDatabase } from "../../db/client";
-import { initSlipsTable, getSlipById } from "../../db/slips";
+import { initSlipsTable, getSlipById, updateSlipParseStatus } from "../../db/slips";
 import { initDraftsTable, getDraft, getDraftBySlipId, updateDraftField } from "../../db/drafts";
 import { parseSlipToDraftAsync, markDraftReady } from "../../domain/draftService";
 import { ReviewState } from "../../domain/types";
@@ -52,6 +52,13 @@ export function parseSlipHandler(config: AppConfig, parserProvider: ParserProvid
         slip.contentHash,
         parserProvider,
       );
+
+      // Update slip parse_status and lifecycle_status
+      if (result.draft) {
+        updateSlipParseStatus(db, slipId, "success", "parsed");
+      } else {
+        updateSlipParseStatus(db, slipId, result.isMeaningful ? "partial" : "failed", "parse_failed");
+      }
 
       if (result.draft) {
         return json({
