@@ -116,8 +116,8 @@ describe("serveImage — security guards", () => {
   it("accepts .png with valid PNG magic bytes", () => {
     const dir = mkdtempSync(join(tmpdir(), "img-magic-png-"));
     try {
-      // Minimal valid PNG header
-      writeFileSync(join(dir, "img.png"), new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a]));
+      // Full PNG 8-byte signature
+      writeFileSync(join(dir, "img.png"), new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d]));
       const res = serveImage(dir, join(dir, "img.png"));
       expect(res.status).toBe(200);
     } finally {
@@ -128,8 +128,8 @@ describe("serveImage — security guards", () => {
   it("rejects .png with wrong magic bytes", () => {
     const dir = mkdtempSync(join(tmpdir(), "img-magic-png-bad-"));
     try {
-      // Invalid PNG header
-      writeFileSync(join(dir, "bad.png"), new Uint8Array([0x00, 0x00, 0x00, 0x00, 0x0d, 0x0a]));
+      // Invalid PNG header (all zeros)
+      writeFileSync(join(dir, "bad.png"), new Uint8Array(8));
       const res = serveImage(dir, join(dir, "bad.png"));
       expect(res.status).toBe(422);
     } finally {
@@ -163,10 +163,25 @@ describe("serveImage — security guards", () => {
     }
   });
 
+  it("sanitizes filename in content-disposition", () => {
+    const dir = mkdtempSync(join(tmpdir(), "img-sanitize-"));
+    try {
+      const badName = join(dir, "bad\nfile:test.jpg");
+      writeFileSync(badName, new Uint8Array([0xff, 0xd8, 0xff, 0x00]));
+      const res = serveImage(dir, badName);
+      const cd = res.headers.get("content-disposition") || "";
+      // newline and colon should be removed/replaced
+      expect(cd).not.toContain("\n");
+      expect(cd).not.toContain(":");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("returns cache-control header", () => {
     const dir = mkdtempSync(join(tmpdir(), "img-cache-"));
     try {
-      writeFileSync(join(dir, "photo.webp"), new Uint8Array([0x52, 0x49, 0x46, 0x46]));
+      writeFileSync(join(dir, "photo.webp"), new Uint8Array([0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50]));
       const res = serveImage(dir, join(dir, "photo.webp"));
       expect(res.headers.get("cache-control")).toContain("max-age");
     } finally {
@@ -174,15 +189,71 @@ describe("serveImage — security guards", () => {
     }
   });
 
-  // ─── HEIC (extension-only) ──────────────────────────────────
+  // ─── WebP ───────────────────────────────────────────────────
 
-  it("serves .heic files (extension-only, no magic check)", () => {
-    const dir = mkdtempSync(join(tmpdir(), "img-heic-"));
+  it("rejects .webp with WAV content (RIFF+WAVE) with 422", () => {
+    const dir = mkdtempSync(join(tmpdir(), "img-webp-wav-"));
     try {
-      writeFileSync(join(dir, "img.heic"), "fake-heic-content");
-      const res = serveImage(dir, join(dir, "img.heic"));
+      // WAV files also start with RIFF but have WAVE at offset 8, not WEBP
+      writeFileSync(
+        join(dir, "fake.webp"),
+        new Uint8Array([0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00, 0x57, 0x41, 0x56, 0x45]),
+      );
+      const res = serveImage(dir, join(dir, "fake.webp"));
+      expect(res.status).toBe(422);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts .webp with valid RIFF+WEBP header", () => {
+    const dir = mkdtempSync(join(tmpdir(), "img-webp-valid-"));
+    try {
+      // Valid minimal WebP: RIFF + size + WEBP
+      writeFileSync(
+        join(dir, "img.webp"),
+        new Uint8Array([0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50]),
+      );
+      const res = serveImage(dir, join(dir, "img.webp"));
       expect(res.status).toBe(200);
-      expect(res.headers.get("content-type")).toBe("image/heic");
+      expect(res.headers.get("content-type")).toBe("image/webp");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects short .webp file", () => {
+    const dir = mkdtempSync(join(tmpdir(), "img-webp-short-"));
+    try {
+      writeFileSync(join(dir, "short.webp"), new Uint8Array([0x52, 0x49, 0x46, 0x46]));
+      const res = serveImage(dir, join(dir, "short.webp"));
+      expect(res.status).toBe(422);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // ─── PNG full signature ─────────────────────────────────────
+
+  it("accepts .png with full 8-byte signature", () => {
+    const dir = mkdtempSync(join(tmpdir(), "img-png-full-"));
+    try {
+      // Full PNG signature: 89 50 4E 47 0D 0A 1A 0A
+      writeFileSync(join(dir, "img.png"), new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+      const res = serveImage(dir, join(dir, "img.png"));
+      expect(res.status).toBe(200);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects .png with truncated signature (only 4 bytes)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "img-png-short-"));
+    try {
+      // Only first 4 bytes of PNG signature, but full 8 required
+      writeFileSync(join(dir, "short.png"), new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0x00, 0x00, 0x00]));
+      const res = serveImage(dir, join(dir, "short.png"));
+      expect(res.status).toBe(422);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

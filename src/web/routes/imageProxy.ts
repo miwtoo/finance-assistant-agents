@@ -24,21 +24,34 @@ const ALLOWED_EXTENSIONS = new Set(Object.keys(EXTENSION_MIME));
  * Minimum magic bytes validation for formats that have well-known signatures.
  * HEIC/HEIF support is extension-only (no magic check) due to format complexity.
  *
- * Each entry: [extension byte offset, expected bytes as Uint8Array]
+ * For simple prefix checks: expects file to start with these bytes.
+ * WebP uses custom logic: RIFF at 0-3 + WEBP at 8-11.
  */
 const MAGIC_BYTES: Record<string, Uint8Array> = {
   ".jpg": new Uint8Array([0xff, 0xd8, 0xff]),
   ".jpeg": new Uint8Array([0xff, 0xd8, 0xff]),
-  ".png": new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
-  ".webp": new Uint8Array([0x52, 0x49, 0x46, 0x46]), // "RIFF" — but for simplicity check start of WebP file after RIFF+size
+  ".png": new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), // full PNG signature
 };
 
 /**
  * Validate magic bytes of file content.
  * Returns true if the file's first bytes match the expected signature for the extension.
  * HEIC/HEIF skip magic validation (extension-only).
+ *
+ * WebP requires: bytes 0-3 = RIFF, bytes 8-11 = WEBP.
  */
 function validateMagicBytes(filePath: string, ext: string, content: Buffer): boolean {
+  // WebP custom validation
+  if (ext === ".webp") {
+    if (content.length < 12) return false;
+    // Bytes 0-3: RIFF
+    if (content[0] !== 0x52 || content[1] !== 0x49 || content[2] !== 0x46 || content[3] !== 0x46) return false;
+    // Bytes 8-11: WEBP
+    if (content[8] !== 0x57 || content[9] !== 0x45 || content[10] !== 0x42 || content[11] !== 0x50) return false;
+    return true;
+  }
+
+  // Simple prefix check for other formats with known magic
   const expected = MAGIC_BYTES[ext];
   if (!expected) return true; // HEIC/HEIF — extension-only, skip magic check
   if (content.length < expected.length) return false;
@@ -157,7 +170,7 @@ export function serveImage(slipsRawDir: string, sourcePath: string): Response {
       );
     }
 
-    const fileName = basename(sourcePath);
+    const fileName = sanitizeFilename(basename(sourcePath));
     return new Response(content, {
       status: 200,
       headers: {
@@ -177,4 +190,10 @@ export function serveImage(slipsRawDir: string, sourcePath: string): Response {
 function extname(p: string): string {
   const idx = p.lastIndexOf(".");
   return idx >= 0 ? p.slice(idx).toLowerCase() : "";
+}
+
+/** Sanitize a filename for use in Content-Disposition header.
+ *  Removes newlines, control chars, and path separators. */
+function sanitizeFilename(name: string): string {
+  return name.replace(/[\x00-\x1f\x7f/\\:"]/g, "_");
 }
