@@ -119,6 +119,14 @@ export function getSlipsByPaths(db: Database, paths: string[]): SlipRecord[] {
   return rows.map(mapRow);
 }
 
+/** Return a slip record by its id, or null if not found. */
+export function getSlipById(db: Database, id: number): SlipRecord | null {
+  const row = db
+    .query("SELECT * FROM slips WHERE id = ?")
+    .get(id) as Record<string, unknown> | undefined;
+  return row ? mapRow(row) : null;
+}
+
 function mapRow(row: Record<string, unknown>): SlipRecord {
   return {
     id: row.id as number,
