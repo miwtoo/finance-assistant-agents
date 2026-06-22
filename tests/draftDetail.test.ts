@@ -36,7 +36,6 @@ describe("GET /drafts/:id", () => {
     try { rmSync(tmpDbPath); } catch {}
   });
 
-  /** Seed a slip and draft into the DB directly. Returns draft id. */
   function seedDraft(overrides: {
     duplicateRisk?: boolean;
     hasUncertainty?: boolean;
@@ -47,6 +46,8 @@ describe("GET /drafts/:id", () => {
     sourceAccountName?: string | null;
     category?: string | null;
     parsedMerchant?: string | null;
+    parsedCurrency?: string | null;
+    currency?: string | null;
     sourceAccountHints?: string | null;
   } = {}): number {
     const db = openDatabase(tmpDbPath);
@@ -66,8 +67,8 @@ describe("GET /drafts/:id", () => {
         contentHash: slip.contentHash,
         date: "2025-06-22",
         amount: ("amount" in overrides ? overrides.amount : "100.00") as string | null,
-        currency: "THB",
-        parsedCurrency: "THB",
+        currency: ("currency" in overrides ? overrides.currency : "THB") as string | null,
+        parsedCurrency: ("parsedCurrency" in overrides ? overrides.parsedCurrency : "THB") as string | null,
         merchant: ("merchant" in overrides ? overrides.merchant : "Test Merchant") as string | null,
         parsedMerchant: ("parsedMerchant" in overrides ? overrides.parsedMerchant : "Test Parsed Merchant") as string | null,
         parsedCategory: null,
@@ -111,7 +112,7 @@ describe("GET /drafts/:id", () => {
 
     const body = await res.text();
     expect(body).toContain("<img");
-    expect(body).toContain(`/slips/`);
+    expect(body).toContain("/slips/");
     expect(body).toContain("/image");
     expect(body).toContain("<form");
     expect(body).toContain('id="date"');
@@ -177,22 +178,22 @@ describe("GET /drafts/:id", () => {
     expect(body.toLowerCase()).not.toContain("duplicate risk");
   });
 
-  it("shows uncertainty banner and resolve action when hasUncertainty is true", async () => {
+  it("shows uncertainty banner and confirm action when hasUncertainty is true", async () => {
     const draftId = seedDraft({ hasUncertainty: true, amount: "100.00", merchant: "Shop", sourceAccountName: "Bank" });
     const app = createApp(config);
     const res = await app.handle(new Request(`http://test/drafts/${draftId}`));
     const body = await res.text();
     expect(body.toLowerCase()).toContain("uncertainty");
-    expect(body).toMatch(/resolve review/i);
+    expect(body).toMatch(/confirm reviewed fields/i);
     expect(body).toMatch(/banner-warning/);
   });
 
-  it("does not show resolve action when hasUncertainty is false", async () => {
+  it("does not show confirm reviewed fields action when hasUncertainty is false", async () => {
     const draftId = seedDraft({ hasUncertainty: false });
     const app = createApp(config);
     const res = await app.handle(new Request(`http://test/drafts/${draftId}`));
     const body = await res.text();
-    expect(body.toLowerCase()).not.toContain("resolve review");
+    expect(body.toLowerCase()).not.toContain("confirm reviewed fields");
   });
 
   it("mark-ready button is disabled when duplicate risk is active", async () => {
@@ -222,7 +223,7 @@ describe("GET /drafts/:id", () => {
     expect(body).toMatch(/<option value=""/);
   });
 
-  it("shows source account hints from slip when available", async () => {
+  it("shows source account hints with evidence and source when available", async () => {
     const draftId = seedDraft({
       sourceAccountHints: JSON.stringify([{ identifier: "****1234", evidence: "****1234", source: "card_number" }]),
     });
@@ -231,6 +232,7 @@ describe("GET /drafts/:id", () => {
     const body = await res.text();
     expect(body).toContain("****1234");
     expect(body).toMatch(/hints from slip/i);
+    expect(body).toMatch(/card_number/);
   });
 
   it("has responsive viewport meta tag", async () => {
@@ -242,13 +244,13 @@ describe("GET /drafts/:id", () => {
     expect(body).toMatch(/width=device-width/);
   });
 
-  it("has parse action buttons when draft is empty", async () => {
+  it("has parse button when draft is empty but no create-draft button", async () => {
     const draftId = seedDraft({ amount: null, merchant: null, parsedMerchant: null });
     const app = createApp(config);
     const res = await app.handle(new Request(`http://test/drafts/${draftId}`));
     const body = await res.text();
     expect(body).toMatch(/parse slip/i);
-    expect(body).toMatch(/create draft manually/i);
+    expect(body).not.toMatch(/create draft manually/i);
   });
 
   it("shows re-parse button when draft has data", async () => {
@@ -289,5 +291,70 @@ describe("GET /drafts/:id", () => {
     const body = await res.text();
     expect(body).toMatch(/read-only/i);
     expect(body).toMatch(/synced and read-only/i);
+  });
+
+  it("shows currency default uncertainty copy when parsedCurrency differs from currency", async () => {
+    const draftId = seedDraft({
+      hasUncertainty: true,
+      parsedCurrency: null,
+      currency: "THB",
+      amount: "100.00",
+      merchant: "Shop",
+      sourceAccountName: "Bank",
+    });
+    const app = createApp(config);
+    const res = await app.handle(new Request(`http://test/drafts/${draftId}`));
+    const body = await res.text();
+    expect(body).toMatch(/parser could not confirm currency/i);
+    expect(body).toMatch(/thb is the default until reviewed/i);
+  });
+
+  it("shows currency default uncertainty copy when parsedCurrency is unrecognized", async () => {
+    const draftId = seedDraft({
+      hasUncertainty: true,
+      parsedCurrency: "XYZ",
+      currency: "THB",
+      amount: "100.00",
+      merchant: "Shop",
+      sourceAccountName: "Bank",
+    });
+    const app = createApp(config);
+    const res = await app.handle(new Request(`http://test/drafts/${draftId}`));
+    const body = await res.text();
+    expect(body).toMatch(/parser could not confirm currency/i);
+  });
+
+  it("does not show currency default copy when parsedCurrency matches currency", async () => {
+    const draftId = seedDraft({
+      hasUncertainty: true,
+      parsedCurrency: "THB",
+      currency: "THB",
+      amount: "100.00",
+      merchant: "Shop",
+      sourceAccountName: "Bank",
+    });
+    const app = createApp(config);
+    const res = await app.handle(new Request(`http://test/drafts/${draftId}`));
+    const body = await res.text();
+    expect(body).not.toMatch(/parser could not confirm currency/i);
+  });
+
+  it("action buttons have type button inside form", async () => {
+    const draftId = seedDraft();
+    const app = createApp(config);
+    const res = await app.handle(new Request(`http://test/drafts/${draftId}`));
+    const body = await res.text();
+    // All onclick buttons inside the form should be type="button"
+    expect(body).toMatch(/type=["']button["']/);
+  });
+
+  it("saveDraft JS checks res.ok and shows error banner on failure", async () => {
+    const draftId = seedDraft();
+    const app = createApp(config);
+    const res = await app.handle(new Request(`http://test/drafts/${draftId}`));
+    const body = await res.text();
+    expect(body).toMatch(/if \(!res\.ok\)/);
+    expect(body).toMatch(/showJsError/);
+    expect(body).toMatch(/jsErrorBanner/);
   });
 });
