@@ -89,6 +89,7 @@ describe("Draft API routes", () => {
       fireflyBaseUrl: "http://test",
       fireflyToken: "test",
       geminiApiKey: "test",
+      geminiModel: "gemini-2.5-flash",
       slipsRawDir: tmpSlipsDir,
       dbPath: tmpDbPath,
       cfAccessHeader: "Cf-Access-Authenticated-User-Email",

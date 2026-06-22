@@ -48,6 +48,10 @@ export function renderDraftDetailPage(props: RenderProps): string {
     !!draft.merchant &&
     !!draft.sourceAccountName;
 
+  const isCurrencyDefaulted =
+    draft.hasUncertainty &&
+    draft.parsedCurrency !== draft.currency;
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -139,6 +143,9 @@ export function renderDraftDetailPage(props: RenderProps): string {
     .back-link:hover { text-decoration: underline; }
 
     .section-title { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; color: #888; margin: 1.5rem 0 0.75rem; font-weight: 600; }
+
+    .hint-list { font-size: 0.8rem; color: #666; margin-top: 0.375rem; }
+    .hint-item { margin-bottom: 0.25rem; }
   </style>
 </head>
 <body>
@@ -167,21 +174,18 @@ export function renderDraftDetailPage(props: RenderProps): string {
       ${draft.hasUncertainty ? `
       <div class="banner banner-warning" role="alert">
         <strong>Parser uncertainty.</strong> Some fields need your review.
-        Fill in valid values, then click <strong>Resolve review</strong>.
+        Fill in valid values, then click <strong>Confirm reviewed fields</strong>.
       </div>
       ` : ""}
 
       ${saveError ? `<div class="banner banner-error" role="alert"><strong>Error:</strong> ${escapeHtml(saveError)}</div>` : ""}
       ${saveSuccess ? `<div class="banner banner-success" role="status">${escapeHtml(saveSuccess)}</div>` : ""}
 
+      <div id="jsErrorBanner" class="banner banner-error" role="alert" style="display:none;"></div>
+
       ${!isReady && !isSynced ? `
       <div class="parse-actions">
-        ${!draft.merchant && !draft.amount ? `
-          <button class="btn btn-primary" id="parseBtn" onclick="parseSlip()">Parse slip</button>
-          <button class="btn btn-secondary" id="manualBtn" onclick="createManualDraft()">Create draft manually</button>
-        ` : `
-          <button class="btn btn-secondary" id="parseBtn" onclick="parseSlip()">Re-parse slip</button>
-        `}
+        <button class="btn ${!draft.merchant && !draft.amount ? 'btn-primary' : 'btn-secondary'}" id="parseBtn" onclick="parseSlip()">${!draft.merchant && !draft.amount ? 'Parse slip' : 'Re-parse slip'}</button>
         <span class="loading-text" id="parseLoading" style="display:none;">Parsing with Gemini…</span>
       </div>
       ` : ""}
@@ -206,7 +210,11 @@ export function renderDraftDetailPage(props: RenderProps): string {
         <select id="currency" name="currency" ${isSynced ? "disabled" : ""}>
           ${currencyOptions}
         </select>
-        ${(!draft.currency || draft.currency === "UNKNOWN") ? '<div class="help-text">Defaulted to THB — verify before marking ready</div>' : ""}
+        ${isCurrencyDefaulted ? `
+          <div class="help-text">Parser could not confirm currency; THB is the default until reviewed.</div>
+        ` : (!draft.currency || draft.currency === "UNKNOWN") ? `
+          <div class="help-text">Defaulted to THB — verify before marking ready</div>
+        ` : ""}
       </div>
 
       <div class="field-group">
@@ -233,16 +241,19 @@ export function renderDraftDetailPage(props: RenderProps): string {
         <label for="source_account_name">Source account</label>
         <input type="text" id="source_account_name" name="source_account_name" value="${escapeHtml(draft.sourceAccountName ?? "")}" placeholder="e.g. Kasikorn Savings" ${isSynced ? "readonly" : ""}>
         ${sourceAccountHints.length > 0 ? `
-          <div class="help-text">Hints from slip: ${sourceAccountHints.map(h => escapeHtml(h.identifier)).join(", ")}</div>
+          <div class="hint-list">
+            <div class="hint-item">Hints from slip:</div>
+            ${sourceAccountHints.map(h => `<div class="hint-item">• ${escapeHtml(h.identifier)} — ${escapeHtml(h.evidence)} (${escapeHtml(h.source)})</div>`).join("")}
+          </div>
         ` : ""}
         <div class="help-text">Must match a Firefly asset account. Not auto-detected from folders.</div>
       </div>
 
       ${!isSynced ? `
       <div class="actions">
-        <button class="btn btn-secondary" onclick="saveDraft()">Save as needs review</button>
-        ${draft.hasUncertainty ? `<button class="btn btn-secondary" onclick="resolveUncertainty()" ${!hasValidFieldsForResolve ? "disabled" : ""}>Resolve review</button>` : ""}
-        <button class="btn btn-primary" onclick="markReady()" ${draft.duplicateRisk || draft.hasUncertainty || !hasValidFieldsForResolve ? "disabled" : ""}>Mark ready</button>
+        <button type="button" class="btn btn-secondary" onclick="saveDraft()">Save as needs review</button>
+        ${draft.hasUncertainty ? `<button type="button" class="btn btn-secondary" onclick="resolveUncertainty()" ${!hasValidFieldsForResolve ? "disabled" : ""}>Confirm reviewed fields</button>` : ""}
+        <button type="button" class="btn btn-primary" onclick="markReady()" ${draft.duplicateRisk || draft.hasUncertainty || !hasValidFieldsForResolve ? "disabled" : ""}>Mark ready</button>
       </div>
       ${!hasValidFieldsForResolve && !draft.duplicateRisk && !draft.hasUncertainty ? '<div class="help-text">Fill all required fields to enable Mark ready.</div>' : ""}
       ` : `
@@ -264,51 +275,38 @@ export function renderDraftDetailPage(props: RenderProps): string {
       const el = document.getElementById(id);
       if (el) el.disabled = disabled;
     }
+    function showJsError(msg) {
+      const el = document.getElementById('jsErrorBanner');
+      if (el) { el.textContent = msg; el.style.display = 'block'; }
+    }
+    function hideJsError() {
+      const el = document.getElementById('jsErrorBanner');
+      if (el) { el.style.display = 'none'; }
+    }
 
     async function parseSlip() {
+      hideJsError();
       setLoading('parseLoading', true);
       disableBtn('parseBtn', true);
-      disableBtn('manualBtn', true);
       try {
         const res = await fetch('/candidates/' + slipId + '/parse', { method: 'POST' });
         const data = await res.json();
         if (data.ok) {
           window.location.reload();
         } else {
-          alert('Parse failed: ' + (data.message || 'Unknown error'));
+          showJsError('Parse failed: ' + (data.message || 'Unknown error'));
           setLoading('parseLoading', false);
           disableBtn('parseBtn', false);
-          disableBtn('manualBtn', false);
         }
       } catch (e) {
-        alert('Parse error: ' + (e.message || 'Network error'));
+        showJsError('Parse error: ' + (e.message || 'Network error'));
         setLoading('parseLoading', false);
-        disableBtn('parseBtn', false);
-        disableBtn('manualBtn', false);
-      }
-    }
-
-    async function createManualDraft() {
-      disableBtn('manualBtn', true);
-      disableBtn('parseBtn', true);
-      try {
-        const res = await fetch('/candidates/' + slipId + '/create-draft', { method: 'POST' });
-        const data = await res.json();
-        if (data.ok) {
-          window.location.reload();
-        } else {
-          alert('Failed: ' + (data.message || 'Unknown error'));
-          disableBtn('manualBtn', false);
-          disableBtn('parseBtn', false);
-        }
-      } catch (e) {
-        alert('Error: ' + (e.message || 'Network error'));
-        disableBtn('manualBtn', false);
         disableBtn('parseBtn', false);
       }
     }
 
     async function saveDraft() {
+      hideJsError();
       const fields = [
         { id: 'date', name: 'date' },
         { id: 'amount', name: 'amount' },
@@ -321,43 +319,67 @@ export function renderDraftDetailPage(props: RenderProps): string {
         for (const f of fields) {
           const el = document.getElementById(f.id);
           const value = el ? el.value : null;
-          await fetch('/drafts/' + draftId, {
+          const res = await fetch('/drafts/' + draftId, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ field: f.name, value: value || null })
           });
+          if (!res.ok) {
+            let msg = 'Save failed for ' + f.name;
+            try {
+              const data = await res.json();
+              msg = data.message || msg;
+            } catch {}
+            showJsError(msg);
+            return;
+          }
         }
         window.location.search = '?saved=1';
       } catch (e) {
-        alert('Save error: ' + (e.message || 'Network error'));
+        showJsError('Save error: ' + (e.message || 'Network error'));
       }
     }
 
     async function resolveUncertainty() {
+      hideJsError();
+      // Client-side pre-check: amount and date must look valid
+      const amountEl = document.getElementById('amount');
+      const dateEl = document.getElementById('date');
+      const amountVal = amountEl ? amountEl.value : '';
+      const dateVal = dateEl ? dateEl.value : '';
+      if (!/^-?\d+([.,]\d+)?$/.test(amountVal)) {
+        showJsError('Amount must be a valid decimal before confirming review.');
+        return;
+      }
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) {
+        showJsError('Date must be in YYYY-MM-DD format before confirming review.');
+        return;
+      }
       try {
         const res = await fetch('/drafts/' + draftId + '/resolve-uncertainty', { method: 'POST' });
         const data = await res.json();
         if (data.ok) {
           window.location.search = '?resolved=1';
         } else {
-          alert('Cannot resolve: ' + (data.errors ? data.errors.join(', ') : data.message));
+          showJsError('Cannot resolve: ' + (data.errors ? data.errors.join(', ') : data.message));
         }
       } catch (e) {
-        alert('Error: ' + (e.message || 'Network error'));
+        showJsError('Error: ' + (e.message || 'Network error'));
       }
     }
 
     async function markReady() {
+      hideJsError();
       try {
         const res = await fetch('/drafts/' + draftId + '/mark-ready', { method: 'POST' });
         const data = await res.json();
         if (data.ok) {
           window.location.search = '?ready=1';
         } else {
-          alert('Not ready: ' + (data.errors ? data.errors.join(', ') : data.message));
+          showJsError('Not ready: ' + (data.errors ? data.errors.join(', ') : data.message));
         }
       } catch (e) {
-        alert('Error: ' + (e.message || 'Network error'));
+        showJsError('Error: ' + (e.message || 'Network error'));
       }
     }
   </script>
@@ -365,10 +387,25 @@ export function renderDraftDetailPage(props: RenderProps): string {
 </html>`;
 }
 
-function tryParseHints(raw: string): Array<{ identifier: string }> {
+interface SourceAccountHint {
+  identifier: string;
+  evidence: string;
+  source: string;
+}
+
+function tryParseHints(raw: string): SourceAccountHint[] {
   try {
     const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) return parsed;
+    if (Array.isArray(parsed)) {
+      return parsed.filter(
+        (h): h is SourceAccountHint =>
+          typeof h === "object" &&
+          h !== null &&
+          typeof h.identifier === "string" &&
+          typeof h.evidence === "string" &&
+          typeof h.source === "string",
+      );
+    }
   } catch {
     // ignore
   }

@@ -2,6 +2,7 @@ import { Elysia } from "elysia";
 import { loadConfig, validateConfigPaths } from "./config";
 import type { AppConfig } from "./config";
 import type { ParserProvider } from "./domain/parserTypes";
+import { GeminiParserProvider } from "./infra/parser/geminiParserProvider";
 import { cloudflareAccessGuard } from "./web/middleware/cloudflareAccess";
 import { candidatesPageHandler } from "./web/routes/candidates";
 import { slipImageHandler } from "./web/routes/imageProxy";
@@ -47,7 +48,7 @@ export function createApp(config = loadConfig(), opts?: CreateAppOptions) {
   app.get("/slips/:id/image", slipImageHandler(config));
 
   // Draft API routes
-  const provider = opts?.parserProvider ?? createNullParser();
+  const provider = opts?.parserProvider ?? createDefaultParser(config);
 
   app.post("/candidates/:id/parse", parseSlipHandler(config, provider));
   app.post("/candidates/:id/create-draft", createManualDraftHandler(config));
@@ -59,6 +60,18 @@ export function createApp(config = loadConfig(), opts?: CreateAppOptions) {
   app.get("/drafts/:id", draftDetailHandler(config));
 
   return app;
+}
+
+/**
+ * Create a default parser based on available config.
+ * If GEMINI_API_KEY is set and non-empty, returns a GeminiParserProvider.
+ * Otherwise returns a null parser (all calls return failed).
+ */
+function createDefaultParser(config: AppConfig): ParserProvider {
+  if (config.geminiApiKey && config.geminiApiKey.trim().length > 0) {
+    return new GeminiParserProvider(config.geminiApiKey, config.geminiModel);
+  }
+  return createNullParser();
 }
 
 /**
@@ -100,3 +113,4 @@ if (isMain) {
 }
 
 export type App = ReturnType<typeof createApp>;
+export { createDefaultParser, createNullParser };
