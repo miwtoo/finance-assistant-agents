@@ -614,4 +614,188 @@ describe("Draft API routes", () => {
     const body = await res.json();
     expect(body.message).toContain("not found");
   });
+
+  // ─── Blocker 1: Ready invariant on PATCH ────────────────────
+
+  it("demotes ready draft to needs_review on PATCH with invalid amount", async () => {
+    const { draftId } = seedDraft(tmpDbPath, {
+      amount: "100.00", currency: "THB", merchant: "Shop",
+    });
+
+    // First mark as ready
+    const markApp = createApp(config);
+    const markRes = await markApp.handle(new Request(`http://test/drafts/${draftId}/mark-ready`, { method: "POST" }));
+    expect(markRes.status).toBe(200);
+
+    // Now edit amount to something invalid
+    const editApp = createApp(config);
+    const editRes = await editApp.handle(
+      new Request(`http://test/drafts/${draftId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ field: "amount", value: "abc" }),
+      }),
+    );
+    expect(editRes.status).toBe(200);
+    const body = await editRes.json();
+    expect(body.draft.reviewState).toBe("needs_review");
+    expect(body.draft.amount).toBe("abc");
+
+    // Mark-ready should now be blocked
+    const readyApp = createApp(config);
+    const readyRes = await readyApp.handle(new Request(`http://test/drafts/${draftId}/mark-ready`, { method: "POST" }));
+    expect(readyRes.status).toBe(422);
+  });
+
+  it("demotes parsed draft to needs_review on PATCH merchant edit", async () => {
+    const { draftId } = seedDraft(tmpDbPath, {
+      amount: "100.00", currency: "THB", merchant: "Shop",
+    });
+    // seedDraft creates with review_state = "parsed"
+    const app = createApp(config);
+    const res = await app.handle(
+      new Request(`http://test/drafts/${draftId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ field: "merchant", value: "Edited Shop" }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.draft.merchant).toBe("Edited Shop");
+    expect(body.draft.reviewState).toBe("needs_review");
+  });
+
+  // ─── Blocker 2: Synced draft rejection ──────────────────────
+
+  it("rejects PATCH on synced draft with 409", async () => {
+    const db = openDatabase(tmpDbPath);
+    try {
+      initSlipsTable(db);
+      initDraftsTable(db);
+      const { upsertDraft } = require("../src/db/drafts");
+      const slip = upsertSlipRecord(db, { sourcePath: "/tmp/test/synced-patch.jpg", contentHash: "synced-patch-hash", mtime: new Date() });
+      const draft = upsertDraft(db, {
+        slipId: slip.id,
+        sourcePath: slip.sourcePath,
+        contentHash: slip.contentHash,
+        date: "2025-06-22",
+        amount: "50.00",
+        currency: "THB",
+        parsedCurrency: "THB",
+        merchant: "Synced",
+        parsedMerchant: "Synced",
+        parsedCategory: null,
+        sourceIdentifier: null,
+        sourceAccountHints: null,
+        sourceAccountName: "Bank",
+        category: null,
+        reviewState: "ready" as any,
+        syncState: "synced" as any,
+        duplicateRisk: false,
+        hasUncertainty: false,
+        userEditedAt: null,
+      });
+      const app = createApp(config);
+      const res = await app.handle(
+        new Request(`http://test/drafts/${draft.id}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ field: "merchant", value: "Hacked" }),
+        }),
+      );
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.message).toContain("synced");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("rejects resolve-uncertainty on synced draft with 409", async () => {
+    const db = openDatabase(tmpDbPath);
+    try {
+      initSlipsTable(db);
+      initDraftsTable(db);
+      const { upsertDraft } = require("../src/db/drafts");
+      const slip = upsertSlipRecord(db, { sourcePath: "/tmp/test/synced-resolve.jpg", contentHash: "synced-resolve-hash", mtime: new Date() });
+      const draft = upsertDraft(db, {
+        slipId: slip.id,
+        sourcePath: slip.sourcePath,
+        contentHash: slip.contentHash,
+        date: "2025-06-22",
+        amount: "50.00",
+        currency: "THB",
+        parsedCurrency: "THB",
+        merchant: "Synced",
+        parsedMerchant: "Synced",
+        parsedCategory: null,
+        sourceIdentifier: null,
+        sourceAccountHints: null,
+        sourceAccountName: "Bank",
+        category: null,
+        reviewState: "ready" as any,
+        syncState: "synced" as any,
+        duplicateRisk: false,
+        hasUncertainty: false,
+        userEditedAt: null,
+      });
+      const app = createApp(config);
+      const res = await app.handle(new Request(`http://test/drafts/${draft.id}/resolve-uncertainty`, { method: "POST" }));
+      expect(res.status).toBe(409);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("rejects mark-ready on synced draft with 409", async () => {
+    const db = openDatabase(tmpDbPath);
+    try {
+      initSlipsTable(db);
+      initDraftsTable(db);
+      const { upsertDraft } = require("../src/db/drafts");
+      const slip = upsertSlipRecord(db, { sourcePath: "/tmp/test/synced-mark.jpg", contentHash: "synced-mark-hash", mtime: new Date() });
+      const draft = upsertDraft(db, {
+        slipId: slip.id,
+        sourcePath: slip.sourcePath,
+        contentHash: slip.contentHash,
+        date: "2025-06-22",
+        amount: "50.00",
+        currency: "THB",
+        parsedCurrency: "THB",
+        merchant: "Synced",
+        parsedMerchant: "Synced",
+        parsedCategory: null,
+        sourceIdentifier: null,
+        sourceAccountHints: null,
+        sourceAccountName: "Bank",
+        category: null,
+        reviewState: "ready" as any,
+        syncState: "synced" as any,
+        duplicateRisk: false,
+        hasUncertainty: false,
+        userEditedAt: null,
+      });
+      const app = createApp(config);
+      const res = await app.handle(new Request(`http://test/drafts/${draft.id}/mark-ready`, { method: "POST" }));
+      expect(res.status).toBe(409);
+    } finally {
+      db.close();
+    }
+  });
+
+  // ─── Blocker 3 (non-blocking): reject non-string value ──────
+
+  it("rejects PATCH with non-string value (number)", async () => {
+    const { draftId } = seedDraft(tmpDbPath);
+    const app = createApp(config);
+    const res = await app.handle(
+      new Request(`http://test/drafts/${draftId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ field: "amount", value: 12345 }),
+      }),
+    );
+    expect(res.status).toBe(400);
+  });
 });

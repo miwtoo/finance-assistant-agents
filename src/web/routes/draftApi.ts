@@ -190,6 +190,11 @@ export function saveDraftFieldHandler(config: AppConfig) {
       return json({ ok: false, message: `Field "${field}" is not allowed for manual edit` }, 400);
     }
 
+    // Reject non-string/non-null values
+    if (value !== null && typeof value !== "string") {
+      return json({ ok: false, message: "Value must be a string or null" }, 400);
+    }
+
     let db: Database | null = null;
     try {
       db = openDatabase(config.dbPath);
@@ -200,7 +205,12 @@ export function saveDraftFieldHandler(config: AppConfig) {
         return json({ ok: false, message: `Draft #${draftId} not found` }, 404);
       }
 
-      // Wrap updates in a transaction: field update + user_edited_at
+      // Reject edits on synced drafts
+      if (draft.syncState === "synced") {
+        return json({ ok: false, message: "Cannot edit a synced draft" }, 409);
+      }
+
+      // Wrap updates in a transaction: field update + user_edited_at + state demotion
       const safeDb = db;
       const tx = safeDb.transaction(() => {
         // 1. Update the requested field
@@ -208,6 +218,11 @@ export function saveDraftFieldHandler(config: AppConfig) {
 
         // 2. Always set user_edited_at on manual edit
         updateDraftField(safeDb, draftId, "user_edited_at", new Date().toISOString());
+
+        // 3. Demote review_state to needs_review (user edit invalidates ready/parsed)
+        if (draft.reviewState === ReviewState.Parsed || draft.reviewState === ReviewState.Ready) {
+          updateDraftField(safeDb, draftId, "review_state", ReviewState.NeedsReview);
+        }
 
         // Re-read final state
         return getDraft(safeDb, draftId);
@@ -274,6 +289,11 @@ export function resolveUncertaintyHandler(config: AppConfig) {
       const draft = getDraft(db, draftId);
       if (!draft) {
         return json({ ok: false, message: `Draft #${draftId} not found` }, 404);
+      }
+
+      // Reject edits on synced drafts
+      if (draft.syncState === "synced") {
+        return json({ ok: false, message: "Cannot resolve uncertainty on a synced draft" }, 409);
       }
 
       const errors: string[] = [];
@@ -365,6 +385,11 @@ export function markDraftReadyHandler(config: AppConfig) {
       const draft = getDraft(db, draftId);
       if (!draft) {
         return json({ ok: false, message: `Draft #${draftId} not found` }, 404);
+      }
+
+      // Reject mark-ready on synced drafts
+      if (draft.syncState === "synced") {
+        return json({ ok: false, message: "Cannot mark a synced draft as ready" }, 409);
       }
 
       const result = markDraftReady(db, draftId);
