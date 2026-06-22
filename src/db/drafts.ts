@@ -1,9 +1,5 @@
 import type { Database } from "bun:sqlite";
-import type {
-  ReviewState,
-  SyncState,
-  CurrencyCode,
-} from "../domain/types";
+import type { ReviewState, SyncState } from "../domain/types";
 
 /** Schema for the `drafts` table. */
 export interface DraftRecord {
@@ -14,9 +10,12 @@ export interface DraftRecord {
   date: string | null;
   amount: string | null;
   currency: string | null;
+  parsedCurrency: string | null;
   merchant: string | null;
   parsedMerchant: string | null;
+  parsedCategory: string | null;
   sourceIdentifier: string | null;
+  sourceAccountHints: string | null;
   sourceAccountName: string | null;
   category: string | null;
   reviewState: string;
@@ -35,9 +34,12 @@ export interface DraftInput {
   date: string | null;
   amount: string | null;
   currency: string | null;
+  parsedCurrency: string | null;
   merchant: string | null;
   parsedMerchant: string | null;
+  parsedCategory: string | null;
   sourceIdentifier: string | null;
+  sourceAccountHints: string | null;
   sourceAccountName: string | null;
   category: string | null;
   reviewState: ReviewState;
@@ -59,9 +61,12 @@ export function initDraftsTable(db: Database): void {
       date TEXT,
       amount TEXT,
       currency TEXT,
+      parsed_currency TEXT,
       merchant TEXT,
       parsed_merchant TEXT,
+      parsed_category TEXT,
       source_identifier TEXT,
+      source_account_hints TEXT,
       source_account_name TEXT,
       category TEXT,
       review_state TEXT NOT NULL DEFAULT 'parsed',
@@ -83,10 +88,11 @@ export function insertDraft(db: Database, input: DraftInput): DraftRecord {
   db.run(
     `INSERT INTO drafts
       (slip_id, source_path, content_hash, date, amount, currency,
-       merchant, parsed_merchant, source_identifier, source_account_name,
+       parsed_currency, merchant, parsed_merchant, parsed_category,
+       source_identifier, source_account_hints, source_account_name,
        category, review_state, sync_state, duplicate_risk, has_uncertainty,
        created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
     [
       input.slipId,
       input.sourcePath,
@@ -94,9 +100,12 @@ export function insertDraft(db: Database, input: DraftInput): DraftRecord {
       input.date,
       input.amount,
       input.currency,
+      input.parsedCurrency,
       input.merchant,
       input.parsedMerchant,
+      input.parsedCategory,
       input.sourceIdentifier,
+      input.sourceAccountHints,
       input.sourceAccountName,
       input.category,
       input.reviewState,
@@ -119,19 +128,23 @@ export function upsertDraft(db: Database, input: DraftInput): DraftRecord {
   db.run(
     `INSERT INTO drafts
       (slip_id, source_path, content_hash, date, amount, currency,
-       merchant, parsed_merchant, source_identifier, source_account_name,
+       parsed_currency, merchant, parsed_merchant, parsed_category,
+       source_identifier, source_account_hints, source_account_name,
        category, review_state, sync_state, duplicate_risk, has_uncertainty,
        created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
      ON CONFLICT(slip_id) DO UPDATE SET
        source_path = excluded.source_path,
        content_hash = excluded.content_hash,
        date = excluded.date,
        amount = excluded.amount,
        currency = excluded.currency,
+       parsed_currency = excluded.parsed_currency,
        merchant = excluded.merchant,
        parsed_merchant = excluded.parsed_merchant,
+       parsed_category = excluded.parsed_category,
        source_identifier = excluded.source_identifier,
+       source_account_hints = excluded.source_account_hints,
        source_account_name = excluded.source_account_name,
        category = excluded.category,
        review_state = excluded.review_state,
@@ -146,9 +159,12 @@ export function upsertDraft(db: Database, input: DraftInput): DraftRecord {
       input.date,
       input.amount,
       input.currency,
+      input.parsedCurrency,
       input.merchant,
       input.parsedMerchant,
+      input.parsedCategory,
       input.sourceIdentifier,
+      input.sourceAccountHints,
       input.sourceAccountName,
       input.category,
       input.reviewState,
@@ -214,7 +230,9 @@ export function updateDraftField(
     "currency",
     "merchant",
     "parsed_merchant",
+    "parsed_category",
     "source_identifier",
+    "source_account_hints",
     "source_account_name",
     "category",
     "review_state",
@@ -222,10 +240,11 @@ export function updateDraftField(
     "duplicate_risk",
     "has_uncertainty",
   ]);
-  // Map camelCase field names to snake_case columns
   const colMap: Record<string, string> = {
     parsedMerchant: "parsed_merchant",
+    parsedCategory: "parsed_category",
     sourceIdentifier: "source_identifier",
+    sourceAccountHints: "source_account_hints",
     sourceAccountName: "source_account_name",
     reviewState: "review_state",
     syncState: "sync_state",
@@ -264,9 +283,12 @@ function mapRow(row: Record<string, unknown>): DraftRecord {
     date: (row.date as string) ?? null,
     amount: (row.amount as string) ?? null,
     currency: (row.currency as string) ?? null,
+    parsedCurrency: (row.parsed_currency as string) ?? null,
     merchant: (row.merchant as string) ?? null,
     parsedMerchant: (row.parsed_merchant as string) ?? null,
+    parsedCategory: (row.parsed_category as string) ?? null,
     sourceIdentifier: (row.source_identifier as string) ?? null,
+    sourceAccountHints: (row.source_account_hints as string) ?? null,
     sourceAccountName: (row.source_account_name as string) ?? null,
     category: (row.category as string) ?? null,
     reviewState: row.review_state as string,

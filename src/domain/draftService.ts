@@ -4,10 +4,14 @@ import {
   ParserRunStatus,
   ReviewState,
   SyncState,
-  type ParsedSlip,
   type ParseResult,
 } from "./types";
-import { validateParseResult, determineInitialReviewState, checkReadiness, type ReadinessResult } from "./parserValidator";
+import {
+  validateParseResult,
+  determineInitialReviewState,
+  checkReadiness,
+  type ReadinessResult,
+} from "./parserValidator";
 import {
   initDraftsTable,
   upsertDraft,
@@ -21,8 +25,6 @@ import {
   initParserRunsTable,
   insertParserRun,
 } from "../db/parserRuns";
-import { getSlipsByPaths } from "../db/slips";
-import type { SlipRecord } from "../db/slips";
 
 /**
  * Result of a parse operation.
@@ -38,32 +40,42 @@ export interface ParseDraftResult {
   } | null;
   /** Whether this was a meaningful parse that produced a draft */
   isMeaningful: boolean;
+  /** Whether an existing draft was preserved (not overwritten) */
+  preserved: boolean;
   /** Parser run id */
   parserRunId: number;
   /** Human-readable message */
   message: string;
 }
 
-/**
- * Check if a slip path was already scanned (exists in slips table).
+/** States where a draft is considered "user-owned" — parser retry
+ * must never overwrite these.
+ * Only Parsed (auto-parsed, never touched by human) is parser-owned.
  */
-function getSlipRecordByPath(
-  db: Database,
-  sourcePath: string,
-): SlipRecord | null {
-  const slips = getSlipsByPaths(db, [sourcePath]);
-  return slips.length > 0 ? slips[0] : null;
-}
+const USER_OWNED_STATES = new Set([
+  ReviewState.NeedsReview,
+  ReviewState.Ready,
+  ReviewState.Approved,
+]);
 
 /**
- * Check for duplicate risk: another draft with same content_hash
- * but different source path already exists.
+ * Check for duplicate risk:
+ * 1. From the slips table (scan-level duplicate detection)
+ * 2. From another draft with same content_hash but different source path
  */
 function detectDuplicateRisk(
   db: Database,
+  slipId: number,
   contentHash: string | null,
   sourcePath: string,
 ): boolean {
+  // 1. Check slip-level duplicate risk
+  const slipRow = db
+    .query("SELECT duplicate_risk FROM slips WHERE id = ?")
+    .get(slipId) as { duplicate_risk: number } | undefined;
+  if (slipRow && slipRow.duplicate_risk === 1) return true;
+
+  // 2. Check draft-level duplicate risk (same hash, different path)
   if (!contentHash) return false;
   const existing = db
     .query(
@@ -75,8 +87,17 @@ function detectDuplicateRisk(
 }
 
 /**
- * Async version of parseSlipToDraft.
- * The parse call happens first, then DB operations within a transaction.
+ * Parse a slip and create/update a draft.
+ *
+ * The parse call (async) happens first. DB writes are wrapped in a
+ * SQLite transaction for atomicity.
+ *
+ * Re-parse policy:
+ * - If no draft exists → create one on meaningful parse
+ * - If draft exists AND reviewState is still Parsed (parser-owned) → overwrite
+ * - If draft exists AND reviewState is user-owned (NeedsReview/Ready/Approved)
+ *   → record parser run but preserve existing draft
+ * - Total failure → never creates/overwrites draft
  */
 export async function parseSlipToDraftAsync(
   db: Database,
@@ -89,119 +110,165 @@ export async function parseSlipToDraftAsync(
   initDraftsTable(db);
   initParserRunsTable(db);
 
-  // 1. Call the parser provider
+  // 1. Call the parser provider (outside transaction — async I/O)
   let parseResult: ParseResult;
+  let providerError: string | undefined;
   try {
     parseResult = await provider.parse(sourcePath);
   } catch (err) {
-    const errorMessage = err instanceof Error ? err.message : String(err);
-    // Record failed run outside transaction
+    providerError = err instanceof Error ? err.message : String(err);
+    // Record failed run outside transaction (single write, no consistency risk)
     const run = insertParserRun(db, {
       slipId,
       provider: provider.name,
       model: provider.model,
       status: ParserRunStatus.Failed,
       rawJson: null,
-      metadata: JSON.stringify({ error: errorMessage }),
+      metadata: JSON.stringify({ error: providerError }),
     });
     return {
       draft: null,
       isMeaningful: false,
+      preserved: false,
       parserRunId: run.id,
-      message: `Parser provider error: ${errorMessage}`,
+      message: `Parser provider error: ${providerError}`,
     };
   }
 
-  // 2. Validate the parse result
-  const { parsedSlip, isMeaningful } = validateParseResult(
+  // 2. Validate the parse result (pure, no mutation of input)
+  const { parsedSlip, isMeaningful, uncertainties } = validateParseResult(
     parseResult,
     sourcePath,
     contentHash ?? "",
   );
 
-  // 3. Record the parser run
-  const run = insertParserRun(db, {
-    slipId,
-    provider: provider.name,
-    model: provider.model,
-    status: parseResult.status,
-    rawJson: JSON.stringify(parseResult),
-    metadata: JSON.stringify({ confidence: parseResult.confidence }),
-  });
-
-  // 4. If not meaningful → no draft change
-  if (!isMeaningful) {
-    return {
-      draft: null,
-      isMeaningful: false,
-      parserRunId: run.id,
-      message: "Parse did not produce meaningful data. No draft created.",
-    };
-  }
-
-  // 5. Detect duplicate risk (within transaction for consistency)
-  // Check both drafts table and this parse result
+  // 3. Determine duplicate risk (reads DB but we need it before transaction too for the check)
   const duplicateRisk = detectDuplicateRisk(
     db,
+    slipId,
     contentHash,
     sourcePath,
   );
 
-  // 6. Determine initial review state
+  // 4. Determine initial review state
   let reviewState = determineInitialReviewState(parsedSlip);
-
-  // 7. Apply duplicate risk override: if duplicate, force needs-review
   if (duplicateRisk && reviewState === ReviewState.Parsed) {
     reviewState = ReviewState.NeedsReview;
   }
 
-  // 8. Create or update the draft (upsert — idempotent on retry)
-  const draftInput: DraftInput = {
-    slipId,
-    sourcePath,
-    contentHash,
-    date: parsedSlip.date,
-    amount: parsedSlip.amount,
-    currency: parsedSlip.currency,
-    merchant: parsedSlip.normalizedMerchant,
-    parsedMerchant: parsedSlip.parsedMerchant,
-    sourceIdentifier: parsedSlip.sourceIdentifier,
-    sourceAccountName: null,
-    category: null,
-    reviewState,
-    syncState: SyncState.Unsynced,
-    duplicateRisk,
-    hasUncertainty: parsedSlip.hasUncertainty,
-  };
+  // 5. Use a SQLite transaction for all DB writes
+  const tx = db.transaction(() => {
+    // 5a. Insert parser run (includes raw, immutable provider payload)
+    const run = insertParserRun(db, {
+      slipId,
+      provider: provider.name,
+      model: provider.model,
+      status: parseResult.status,
+      rawJson: JSON.stringify(parseResult),
+      metadata: JSON.stringify({
+        confidence: parseResult.confidence,
+        uncertainties,
+      }),
+    });
 
-  let draftRecord;
-  try {
-    draftRecord = upsertDraft(db, draftInput);
-  } catch (err) {
-    // If upsert fails, record the error but still return the parser run
-    const errorMessage = err instanceof Error ? err.message : String(err);
-    return {
-      draft: null,
-      isMeaningful: true,
-      parserRunId: run.id,
-      message: `Draft creation failed: ${errorMessage}`,
+    // 5b. If not meaningful → no draft write
+    if (!isMeaningful) {
+      return {
+        draft: null,
+        isMeaningful: false,
+        preserved: false,
+        parserRunId: run.id,
+        message: "Parse did not produce meaningful data. No draft created.",
+        _runId: run.id,
+      };
+    }
+
+    // 5c. Check existing draft (inside transaction to avoid races)
+    const existingDraft = getDraftBySlipId(db, slipId);
+
+    // 5d. If draft exists and is user-owned → preserve it
+    if (existingDraft) {
+      const existingReviewState = existingDraft.reviewState as ReviewState;
+      if (USER_OWNED_STATES.has(existingReviewState)) {
+        return {
+          draft: {
+            id: existingDraft.id,
+            slipId: existingDraft.slipId,
+            reviewState: existingReviewState,
+            duplicateRisk: existingDraft.duplicateRisk === 1,
+            hasUncertainty: existingDraft.hasUncertainty === 1,
+          },
+          isMeaningful: true,
+          preserved: true,
+          parserRunId: run.id,
+          message: `Existing draft preserved (state: ${existingReviewState}). New parse recorded as run #${run.id}.`,
+          _runId: run.id,
+        };
+      }
+    }
+
+    // 5e. Create or update the draft
+    const draftInput: DraftInput = {
+      slipId,
+      sourcePath,
+      contentHash,
+      date: parsedSlip.date,
+      amount: parsedSlip.amount,
+      currency: parsedSlip.currency,
+      parsedCurrency: parsedSlip.parsedCurrency,
+      merchant: parsedSlip.normalizedMerchant,
+      parsedMerchant: parsedSlip.parsedMerchant,
+      parsedCategory: parsedSlip.parsedCategory,
+      sourceIdentifier: parsedSlip.sourceIdentifier,
+      sourceAccountHints: JSON.stringify(parsedSlip.sourceAccountHints),
+      sourceAccountName: null,
+      category: null,
+      reviewState,
+      syncState: SyncState.Unsynced,
+      duplicateRisk,
+      hasUncertainty: parsedSlip.hasUncertainty,
     };
-  }
 
-  return {
-    draft: {
-      id: draftRecord.id,
-      slipId: draftRecord.slipId,
-      reviewState: reviewState as ReviewState,
-      duplicateRisk: draftRecord.duplicateRisk === 1,
-      hasUncertainty: draftRecord.hasUncertainty === 1,
-    },
-    isMeaningful: true,
-    parserRunId: run.id,
-    message: reviewState === ReviewState.Parsed
-      ? "Draft created and ready for review"
-      : "Draft created with items requiring review",
-  };
+    let draftRecord;
+    try {
+      draftRecord = upsertDraft(db, draftInput);
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      return {
+        draft: null,
+        isMeaningful: true,
+        preserved: false,
+        parserRunId: run.id,
+        message: `Draft creation failed: ${errorMessage}`,
+        _runId: run.id,
+      };
+    }
+
+    return {
+      draft: {
+        id: draftRecord.id,
+        slipId: draftRecord.slipId,
+        reviewState: reviewState as ReviewState,
+        duplicateRisk: draftRecord.duplicateRisk === 1,
+        hasUncertainty: draftRecord.hasUncertainty === 1,
+      },
+      isMeaningful: true,
+      preserved: false,
+      parserRunId: run.id,
+      message:
+        reviewState === ReviewState.Parsed
+          ? "Draft created and ready for review"
+          : "Draft created with items requiring review",
+      _runId: run.id,
+    };
+  });
+
+  // Execute the transaction
+  const result = tx() as ReturnType<typeof tx>;
+
+  // Return result without internal _runId
+  const { _runId, ...publicResult } = result;
+  return publicResult;
 }
 
 /**
@@ -213,7 +280,8 @@ export function markDraftReady(
   draftId: number,
 ): ReadinessResult & { success: boolean } {
   const draft = getDraft(db, draftId);
-  if (!draft) return { success: false, errors: ["Draft not found"], ready: false };
+  if (!draft)
+    return { success: false, errors: ["Draft not found"], ready: false };
 
   const result = checkReadiness({
     date: draft.date,

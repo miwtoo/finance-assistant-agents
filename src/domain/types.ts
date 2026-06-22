@@ -28,7 +28,6 @@ export enum SyncState {
 // ─── Transaction type (MVP 0: expense only) ──────────────────
 export enum TransactionType {
   Expense = "expense",
-  // Future: Transfer = "transfer", Deposit = "deposit"
 }
 
 // ─── Currency ────────────────────────────────────────────────
@@ -58,24 +57,40 @@ export interface FieldConfidence {
   reason?: string;
 }
 
-// ─── Parser result ───────────────────────────────────────────
+// ─── Source account hint from parser ─────────────────────────
+export interface SourceAccountHint {
+  /** Account identifier parsed from slip (e.g. card last-4, account number) */
+  identifier: string;
+  /** How this identifier appeared on the slip (e.g. "X-1234", "****1234") */
+  evidence: string;
+  /** Where on the slip the identifier was found (e.g. "card_number", "reference") */
+  source: string;
+}
+
+// ─── Parser result (immutable provider output) ───────────────
 export interface ParseResult {
   /** Parsed transaction date in YYYY-MM-DD format */
   date: string | null;
   /** Parsed amount as exact decimal string (e.g. "123.45") */
   amount: string | null;
-  /** ISO 4217 currency code */
+  /** ISO 4217 currency code as parsed (may be null, unrecognized, or valid) */
   currency: string | null;
   /** Raw merchant name as extracted by the parser */
   parsedMerchant: string | null;
+  /** Category guess from the parser */
+  parsedCategory: string | null;
   /** Bank-side transaction reference / identifier */
   sourceIdentifier: string | null;
+  /** Source account hints parsed from slip with evidence */
+  sourceAccountHints: SourceAccountHint[];
   /** Parser confidence assessment */
   confidence: "high" | "medium" | "low";
   /** Per-field uncertainty info */
   uncertainties: Record<string, FieldConfidence>;
   /** Overall status of this parse attempt */
   status: ParserRunStatus;
+  /** Raw, immutable provider response payload (JSON-serializable) */
+  providerRawPayload: unknown;
 }
 
 // ─── Parsed slip result (domain-level, after validation) ─────
@@ -88,16 +103,22 @@ export interface ParsedSlip {
   date: string | null;
   /** Parsed amount as exact decimal string (e.g. "123.45") */
   amount: string | null;
-  /** ISO 4217 currency code */
+  /** ISO 4217 currency code (defaulted to THB if missing) */
   currency: CurrencyCode;
+  /** Raw currency string as parsed (before defaulting/validation) */
+  parsedCurrency: string | null;
   /** Raw merchant name as extracted by the parser */
   parsedMerchant: string | null;
   /** Normalized merchant name (mapped via alias rules) */
   normalizedMerchant: string | null;
   /** Firefly destination expense account name */
   destinationAccountName: string | null;
+  /** Category guess from the parser */
+  parsedCategory: string | null;
   /** Bank-side transaction reference / identifier */
   sourceIdentifier: string | null;
+  /** Source account hints with evidence */
+  sourceAccountHints: SourceAccountHint[];
   /** Whether any field has unresolved uncertainty */
   hasUncertainty: boolean;
 }
@@ -120,8 +141,12 @@ export interface DraftTransaction {
   merchant: string;
   /** Original parsed merchant text for audit */
   parsedMerchant: string;
+  /** Category guess from parser (may differ from user-selected category) */
+  parsedCategory: string | null;
   /** Source account identifier from slip */
   sourceIdentifier: string | null;
+  /** Source account hints with evidence */
+  sourceAccountHints: SourceAccountHint[];
   /** Firefly source asset account name */
   sourceAccountName: string | null;
   /** Firefly category name */

@@ -15,7 +15,6 @@ export interface ParserProvider {
 
   /**
    * Parse a slip image from the given file path.
-   * Returns a ParseResult with status, parsed fields, and uncertainty info.
    *
    * Implementations must:
    * - Return status=success for complete, high-confidence parses
@@ -23,7 +22,11 @@ export interface ParserProvider {
    * - Return status=failed for API errors, schema violations, or unparseable images
    * - Set amount as exact decimal string (never number)
    * - Populate uncertainties with per-field reasons when confidence is low
-   * - Include the raw provider response in parseMetadata if possible
+   * - Include the raw provider response in providerRawPayload exactly as received
+   *   (before any validation or transformation)
+   * - Provide sourceAccountHints with identifier, evidence text, and source location
+   * - Provide parsedCategory as a category guess from available context
+   * - NOT mutate or transform the response — return exactly what was parsed
    */
   parse(imagePath: string): Promise<ParseResult>;
 }
