@@ -12,6 +12,7 @@ import {
   markDraftReadyHandler,
   resolveUncertaintyHandler,
 } from "./web/routes/draftApi";
+import { draftDetailHandler } from "./web/routes/draftDetail";
 
 export interface CreateAppOptions {
   /** Optional parser provider (injected for testing). Default: none (parse will fail at runtime until Gemini is wired). */
@@ -53,6 +54,9 @@ export function createApp(config = loadConfig(), opts?: CreateAppOptions) {
   app.patch("/drafts/:id", saveDraftFieldHandler(config));
   app.post("/drafts/:id/mark-ready", markDraftReadyHandler(config));
   app.post("/drafts/:id/resolve-uncertainty", resolveUncertaintyHandler(config));
+
+  // Draft detail page (split-view)
+  app.get("/drafts/:id", draftDetailHandler(config));
 
   return app;
 }
