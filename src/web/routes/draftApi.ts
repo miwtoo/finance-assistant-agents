@@ -154,21 +154,6 @@ export function createManualDraftHandler(config: AppConfig) {
 }
 
 /**
- * Check whether a set of draft fields indicates resolved uncertainty.
- * Returns true if amount+date+merchant are present and have valid format.
- */
-function checkFieldsResolveUncertainty(fields: {
-  amount: string | null;
-  date: string | null;
-  merchant: string | null;
-}): boolean {
-  if (!fields.amount || !fields.date || !fields.merchant) return false;
-  if (!validateAmount(fields.amount)) return false;
-  if (!validateDate(fields.date)) return false;
-  return true;
-}
-
-/**
  * PATCH /drafts/:id
  *
  * Save a single user-editable field. Body: { field: string, value: string|null }.
@@ -177,9 +162,9 @@ function checkFieldsResolveUncertainty(fields: {
  * field edits with 400.
  *
  * On successful save:
- * - Automatically sets user_edited_at timestamp
- * - Recomputes has_uncertainty: cleared when amount+date+merchant are all valid
+ * - Sets user_edited_at timestamp
  * - All writes are wrapped in a SQLite transaction
+ * - NOTE: does NOT clear has_uncertainty — use POST /drafts/:id/resolve-uncertainty
  */
 export function saveDraftFieldHandler(config: AppConfig) {
   return async (context: any): Promise<Response> => {
@@ -208,27 +193,14 @@ export function saveDraftFieldHandler(config: AppConfig) {
         return json({ ok: false, message: `Draft #${draftId} not found` }, 404);
       }
 
-      // Wrap updates in a transaction: field update + user_edited_at + uncertainty recompute
-      const safeDb = db; // non-null at this point
+      // Wrap updates in a transaction: field update + user_edited_at
+      const safeDb = db;
       const tx = safeDb.transaction(() => {
         // 1. Update the requested field
         updateDraftField(safeDb, draftId, field, value ?? null);
 
         // 2. Always set user_edited_at on manual edit
         updateDraftField(safeDb, draftId, "user_edited_at", new Date().toISOString());
-
-        // 3. Recompute has_uncertainty
-        const updated = getDraft(safeDb, draftId);
-        if (updated) {
-          const resolved = checkFieldsResolveUncertainty({
-            amount: updated.amount,
-            date: updated.date,
-            merchant: updated.merchant,
-          });
-          if (resolved && updated.hasUncertainty === 1) {
-            updateDraftField(safeDb, draftId, "has_uncertainty", "0");
-          }
-        }
 
         // Re-read final state
         return getDraft(safeDb, draftId);
@@ -275,7 +247,10 @@ export function saveDraftFieldHandler(config: AppConfig) {
  * Explicit endpoint to clear uncertainty after user review.
  * Validates all readiness-relevant fields (amount, date, currency, merchant,
  * sourceAccountName) are present and valid. Clears has_uncertainty if
- * everything checks out. Returns validation errors if not.
+ * everything checks out (wrapped in a transaction with user_edited_at set).
+ * Returns validation errors if not.
+ *
+ * This is the ONLY way to clear has_uncertainty — PATCH never touches it.
  */
 export function resolveUncertaintyHandler(config: AppConfig) {
   return async (context: { params: { id: string } }): Promise<Response> => {
@@ -320,13 +295,36 @@ export function resolveUncertaintyHandler(config: AppConfig) {
         }, 422);
       }
 
-      // Clear uncertainty
-      updateDraftField(db, draftId, "has_uncertainty", "0");
+      // Clear uncertainty + set user_edited_at (user made review decision)
+      const safeDb = db;
+      const tx = safeDb.transaction(() => {
+        updateDraftField(safeDb, draftId, "has_uncertainty", "0");
+        updateDraftField(safeDb, draftId, "user_edited_at", new Date().toISOString());
+        return getDraft(safeDb, draftId);
+      });
+      const updated = tx();
 
       return json({
         ok: true,
         message: "Uncertainty resolved",
         uncertaintyResolved: true,
+        draft: updated
+          ? {
+              id: updated.id,
+              slipId: updated.slipId,
+              date: updated.date,
+              amount: updated.amount,
+              currency: updated.currency,
+              merchant: updated.merchant,
+              parsedMerchant: updated.parsedMerchant,
+              sourceAccountName: updated.sourceAccountName,
+              category: updated.category,
+              reviewState: updated.reviewState,
+              duplicateRisk: updated.duplicateRisk === 1,
+              hasUncertainty: updated.hasUncertainty === 1,
+              userEditedAt: updated.userEditedAt,
+            }
+          : null,
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
