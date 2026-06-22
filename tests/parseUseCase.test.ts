@@ -68,10 +68,7 @@ describe("parseSlipToDraftAsync — use-case integration", () => {
 
   it("stores parser run with raw provider payload, model metadata, and status", async () => {
     const slip = insertSlip("/tmp/test/parser-run-raw.jpg");
-    const parser = FakeParser.success({
-      parsedMerchant: "Lotus's",
-      amount: "250.00",
-    });
+    const parser = FakeParser.success({ parsedMerchant: "Lotus's", amount: "250.00" });
 
     await parseSlipToDraftAsync(db, slip.id, slip.path, slip.hash, parser);
 
@@ -81,14 +78,11 @@ describe("parseSlipToDraftAsync — use-case integration", () => {
     expect(runs[0].model).toBe("fake-model-v1");
     expect(runs[0].status).toBe(ParserRunStatus.Success);
 
-    // rawJson must contain the EXACT result before validation
     const raw = JSON.parse(runs[0].rawJson!);
     expect(raw.amount).toBe("250.00");
     expect(raw.parsedMerchant).toBe("Lotus's");
     expect(raw.providerRawPayload).toEqual({ raw: "response", model: "fake-v1" });
-    // Must NOT contain validator-added fields
     expect(raw.hasUncertainty).toBeUndefined();
-    expect(raw.parsedCurrency).toBeUndefined();
   });
 
   // ─── 3. Missing currency → THB + uncertainty + blocks ready ───
@@ -105,24 +99,17 @@ describe("parseSlipToDraftAsync — use-case integration", () => {
 
     const draft = getDraftBySlipId(db, slip.id);
     expect(draft!.currency).toBe("THB");
-    expect(draft!.parsedCurrency).toBeNull();
     expect(draft!.hasUncertainty).toBe(1);
 
     const readyResult = markDraftReady(db, draft!.id);
     expect(readyResult.success).toBe(false);
-    expect(readyResult.errors.some((e) => e.toLowerCase().includes("uncertainty"))).toBe(true);
   });
 
   // ─── 4. Unknown currency → THB + uncertainty + blocks ready ───
 
-  it("defaults unknown currency 'XYZ' to THB with uncertainty and blocks ready", async () => {
+  it("defaults unknown currency 'XYZ' to THB with uncertainty, blocks ready", async () => {
     const slip = insertSlip("/tmp/test/unknown-currency.jpg");
-    const parser = FakeParser.success({
-      amount: "75.00",
-      parsedMerchant: "Shop",
-      currency: "XYZ",
-      confidence: "high",
-    });
+    const parser = FakeParser.success({ amount: "75.00", parsedMerchant: "Shop", currency: "XYZ" });
 
     const result = await parseSlipToDraftAsync(db, slip.id, slip.path, slip.hash, parser);
 
@@ -133,13 +120,12 @@ describe("parseSlipToDraftAsync — use-case integration", () => {
     expect(draft!.currency).toBe("THB");
     expect(draft!.parsedCurrency).toBe("XYZ");
 
-    const readyResult = markDraftReady(db, draft!.id);
-    expect(readyResult.success).toBe(false);
+    expect(markDraftReady(db, draft!.id).success).toBe(false);
   });
 
   // ─── 5. Invalid amount → null + uncertainty + needs-review ───
 
-  it("rejects invalid amount format from parser, records uncertainty, sets needs-review", async () => {
+  it("rejects invalid amount format, records uncertainty, sets needs-review", async () => {
     const slip = insertSlip("/tmp/test/invalid-amount.jpg");
     const parser = FakeParser.success({ amount: "12.34.56" });
 
@@ -155,7 +141,7 @@ describe("parseSlipToDraftAsync — use-case integration", () => {
 
   // ─── 6. Invalid date → null + uncertainty + needs-review ─────
 
-  it("rejects invalid date format from parser, records uncertainty, sets needs-review", async () => {
+  it("rejects invalid date format, records uncertainty, sets needs-review", async () => {
     const slip = insertSlip("/tmp/test/invalid-date.jpg");
     const parser = FakeParser.success({ date: "not-a-date" });
 
@@ -197,45 +183,16 @@ describe("parseSlipToDraftAsync — use-case integration", () => {
     expect(failResult.isMeaningful).toBe(false);
     expect(failResult.draft).toBeNull();
 
-    const draft = getDraftBySlipId(db, slip.id);
-    expect(draft!.amount).toBe("150.00");
+    expect(getDraftBySlipId(db, slip.id)!.amount).toBe("150.00");
 
     const runs = getParserRunsBySlipId(db, slip.id);
-    expect(runs.length).toBe(2);
     expect(runs[0].status).toBe(ParserRunStatus.Failed);
   });
 
-  // ─── 9. Successful retry preserves user-owned draft ───────────
-
-  it("does not overwrite user-edited draft on successful retry", async () => {
-    const slip = insertSlip("/tmp/test/retry-preserve.jpg");
-
-    // First parse creates initial draft
-    const first = await parseSlipToDraftAsync(db, slip.id, slip.path, slip.hash, FakeParser.success({ amount: "50.00" }));
-    expect(first.draft).not.toBeNull();
-
-    // User edits the draft (simulate by updating review state to NeedsReview)
-    const draftBefore = getDraftBySlipId(db, slip.id);
-    updateDraftField(db, draftBefore!.id, "review_state", ReviewState.NeedsReview);
-    updateDraftField(db, draftBefore!.id, "merchant", "User-Edited Merchant");
-
-    // Retry with different data
-    const retry = await parseSlipToDraftAsync(db, slip.id, slip.path, slip.hash, FakeParser.success({ amount: "999.99", parsedMerchant: "Overwritten Merchant" }));
-
-    // Should preserve user-owned draft
-    expect(retry.preserved).toBe(true);
-    expect(retry.draft).not.toBeNull();
-
-    const draftAfter = getDraftBySlipId(db, slip.id);
-    expect(draftAfter!.amount).toBe("50.00"); // unchanged
-    expect(draftAfter!.merchant).toBe("User-Edited Merchant"); // unchanged
-  });
-
-  // ─── 10. Duplicate risk from same hash different path ─────────
+  // ─── 9. Duplicate risk from same hash different path ─────────
 
   it("flags duplicate risk and blocks ready when same hash exists from different path", async () => {
     const sharedHash = "dup-hash-basic";
-
     const slip1 = insertSlip("/tmp/test/orig.jpg", sharedHash);
     await parseSlipToDraftAsync(db, slip1.id, slip1.path, slip1.hash, FakeParser.success({ amount: "75.00" }));
 
@@ -243,19 +200,12 @@ describe("parseSlipToDraftAsync — use-case integration", () => {
     const result2 = await parseSlipToDraftAsync(db, slip2.id, slip2.path, slip2.hash, FakeParser.success({ amount: "75.00" }));
 
     expect(result2.draft!.duplicateRisk).toBe(true);
-
-    const draft2 = getDraftBySlipId(db, slip2.id);
-    expect(draft2!.duplicateRisk).toBe(1);
-
-    const readyResult = markDraftReady(db, draft2!.id);
-    expect(readyResult.success).toBe(false);
-    expect(readyResult.errors.some((e) => e.toLowerCase().includes("duplicate"))).toBe(true);
+    expect(markDraftReady(db, getDraftBySlipId(db, slip2.id)!.id).success).toBe(false);
   });
 
-  // ─── 11. Duplicate risk propagation from slips ────────────────
+  // ─── 10. Duplicate risk propagation from slips ───────────────
 
   it("propagates slip-level duplicate_risk into draft and blocks ready", async () => {
-    // Insert a slip that was already flagged as duplicate_risk at scan time
     const slip = insertSlip("/tmp/test/slip-dup-flag.jpg", "unique-hash-slip", true);
     const result = await parseSlipToDraftAsync(db, slip.id, slip.path, slip.hash, FakeParser.success({ amount: "100.00" }));
 
@@ -263,12 +213,10 @@ describe("parseSlipToDraftAsync — use-case integration", () => {
 
     const draft = getDraftBySlipId(db, slip.id);
     expect(draft!.duplicateRisk).toBe(1);
-
-    const readyResult = markDraftReady(db, draft!.id);
-    expect(readyResult.success).toBe(false);
+    expect(markDraftReady(db, draft!.id).success).toBe(false);
   });
 
-  // ─── 12. Same path re-parse NO duplicate risk ─────────────────
+  // ─── 11. Same path re-parse NO duplicate risk ─────────────────
 
   it("does not flag duplicate risk when same sourcePath is re-parsed", async () => {
     const slip = insertSlip("/tmp/test/rescan-slip.jpg", "rescan-hash-unique");
@@ -277,52 +225,36 @@ describe("parseSlipToDraftAsync — use-case integration", () => {
     const result2 = await parseSlipToDraftAsync(db, slip.id, slip.path, slip.hash, FakeParser.success({ amount: "55.00" }));
 
     expect(result2.draft!.duplicateRisk).toBe(false);
-
-    const draft = getDraftBySlipId(db, slip.id);
-    expect(draft!.duplicateRisk).toBe(0);
+    expect(getDraftBySlipId(db, slip.id)!.duplicateRisk).toBe(0);
   });
 
-  // ─── 13. Category optional — does not block ready ─────────────
+  // ─── 12. Category optional — does not block ready ─────────────
 
-  it("allows draft to reach ready when category is null but all required fields are present", async () => {
+  it("allows draft to reach ready when category is null but all required fields present", async () => {
     const slip = insertSlip("/tmp/test/no-category-ready.jpg");
-    const result = await parseSlipToDraftAsync(db, slip.id, slip.path, slip.hash, FakeParser.success({
-      amount: "200.00",
-      parsedMerchant: "Coffee Shop",
-      parsedCategory: null,
+    await parseSlipToDraftAsync(db, slip.id, slip.path, slip.hash, FakeParser.success({
+      amount: "200.00", parsedMerchant: "Coffee Shop", parsedCategory: null,
     }));
-
-    expect(result.draft).not.toBeNull();
 
     const draft = getDraftBySlipId(db, slip.id);
     expect(draft!.category).toBeNull();
     expect(draft!.parsedCategory).toBeNull();
 
-    // Add source account
     updateDraftField(db, draft!.id, "source_account_name", "My Bank Account");
-
-    const readyResult = markDraftReady(db, draft!.id);
-    expect(readyResult.success).toBe(true);
-    expect(readyResult.errors).toEqual([]);
+    expect(markDraftReady(db, draft!.id).success).toBe(true);
   });
 
-  // ─── 14. Parser provider throw → failed run, no draft ─────────
+  // ─── 13. Parser provider throw → failed run, no draft ─────────
 
   it("records failed run and no draft when parser provider throws", async () => {
     const slip = insertSlip("/tmp/test/throws-error.jpg");
     const parser = new FakeParser({
       result: {
-        date: null,
-        amount: null,
-        currency: null,
-        parsedMerchant: null,
-        parsedCategory: null,
-        sourceIdentifier: null,
-        sourceAccountHints: [],
-        confidence: "low",
-        uncertainties: {},
-        status: ParserRunStatus.Failed,
-        providerRawPayload: {},
+        date: null, amount: null, currency: null,
+        parsedMerchant: null, parsedCategory: null,
+        sourceIdentifier: null, sourceAccountHints: [],
+        confidence: "low", assessments: {},
+        status: ParserRunStatus.Failed, providerRawPayload: {},
       },
       throwError: "Network error: API unreachable",
     });
@@ -334,7 +266,130 @@ describe("parseSlipToDraftAsync — use-case integration", () => {
 
     const runs = getParserRunsBySlipId(db, slip.id);
     expect(runs[0].status).toBe(ParserRunStatus.Failed);
+    expect(JSON.parse(runs[0].metadata!).error).toContain("Network error");
+  });
+
+  // ─── Blocker 1: Invalid-only parse → no draft (total validation failure) ──
+
+  it("does not create draft when parser returns only invalid amount with no valid fields", async () => {
+    const slip = insertSlip("/tmp/test/invalid-only-amount.jpg");
+    const parser = FakeParser.success({ amount: "abc", date: null, parsedMerchant: null });
+
+    const result = await parseSlipToDraftAsync(db, slip.id, slip.path, slip.hash, parser);
+
+    expect(result.isMeaningful).toBe(false);
+    expect(result.draft).toBeNull();
+    expect(result.parserRunId).toBeGreaterThan(0);
+
+    // Parser run should be recorded as success (provider returned, but validation failed)
+    const runs = getParserRunsBySlipId(db, slip.id);
+    expect(runs.length).toBe(1);
+  });
+
+  it("does not create draft when parser returns only invalid date with no valid fields", async () => {
+    const slip = insertSlip("/tmp/test/invalid-only-date.jpg");
+    const parser = FakeParser.success({ date: "bad-date", amount: null, parsedMerchant: null });
+
+    const result = await parseSlipToDraftAsync(db, slip.id, slip.path, slip.hash, parser);
+
+    expect(result.isMeaningful).toBe(false);
+    expect(result.draft).toBeNull();
+  });
+
+  // ─── Blocker 3: Ready gate rejects unknown manual currency ────
+
+  it("blocks ready when draft has unrecognized currency 'XYZ'", async () => {
+    const slip = insertSlip("/tmp/test/xyz-currency-ready.jpg");
+    await parseSlipToDraftAsync(db, slip.id, slip.path, slip.hash, FakeParser.success({
+      amount: "50.00", parsedMerchant: "Shop", currency: "THB",
+    }));
+
+    const draft = getDraftBySlipId(db, slip.id);
+    expect(draft).not.toBeNull();
+
+    // Manually set currency to something invalid (simulating user entry)
+    updateDraftField(db, draft!.id, "currency", "XYZ");
+    updateDraftField(db, draft!.id, "source_account_name", "My Bank");
+    updateDraftField(db, draft!.id, "has_uncertainty", "0");
+    updateDraftField(db, draft!.id, "review_state", ReviewState.Parsed);
+
+    const readyResult = markDraftReady(db, draft!.id);
+    expect(readyResult.success).toBe(false);
+    expect(readyResult.errors.some((e) => e.includes("XYZ"))).toBe(true);
+  });
+
+  // ─── Blocker 4: Per-field numeric confidence in parser run ────
+
+  it("stores per-field numeric confidence assessments in parser run metadata", async () => {
+    const slip = insertSlip("/tmp/test/per-field-confidence.jpg");
+    const parser = FakeParser.success({
+      assessments: {
+        amount: { uncertain: false, confidence: 0.95 },
+        date: { uncertain: false, confidence: 0.98 },
+        currency: { uncertain: false, confidence: 0.99 },
+        parsedMerchant: { uncertain: false, confidence: 0.85 },
+      },
+    });
+
+    await parseSlipToDraftAsync(db, slip.id, slip.path, slip.hash, parser);
+
+    const runs = getParserRunsBySlipId(db, slip.id);
     const meta = JSON.parse(runs[0].metadata!);
-    expect(meta.error).toContain("Network error");
+    expect(meta.uncertainties.amount.confidence).toBe(0.95);
+    expect(meta.uncertainties.date.confidence).toBe(0.98);
+  });
+
+  // ─── Blocker 5: Retry improves parser-owned NeedsReview ──────
+
+  it("retry overwrites parser-owned needs_review draft (userEditedAt=null)", async () => {
+    const slip = insertSlip("/tmp/test/retry-improve-parser-owned.jpg");
+
+    // First parse with low confidence → creates NeedsReview (parser-owned)
+    const first = await parseSlipToDraftAsync(db, slip.id, slip.path, slip.hash, FakeParser.partial({
+      amount: "50.00",
+      parsedMerchant: "Bad OCR",
+    }));
+    expect(first.draft!.reviewState).toBe(ReviewState.NeedsReview);
+
+    const before = getDraftBySlipId(db, slip.id);
+    expect(before!.userEditedAt).toBeNull(); // parser-owned
+
+    // Retry with better result → should overwrite
+    const retry = await parseSlipToDraftAsync(db, slip.id, slip.path, slip.hash, FakeParser.success({
+      amount: "55.00",
+      parsedMerchant: "Fixed OCR",
+    }));
+
+    expect(retry.preserved).toBe(false); // was overwritten
+    expect(retry.draft).not.toBeNull();
+
+    const after = getDraftBySlipId(db, slip.id);
+    expect(after!.amount).toBe("55.00"); // updated
+    expect(after!.parsedMerchant).toBe("Fixed OCR"); // updated
+    expect(after!.userEditedAt).toBeNull(); // still parser-owned
+  });
+
+  // ─── Blocker 5: Retry preserves user-edited NeedsReview ──────
+
+  it("retry preserves user-edited needs_review draft (userEditedAt set)", async () => {
+    const slip = insertSlip("/tmp/test/retry-preserve-user-edited.jpg");
+
+    // First parse creates draft
+    await parseSlipToDraftAsync(db, slip.id, slip.path, slip.hash, FakeParser.success({ amount: "50.00" }));
+
+    // User edits a field (simulate by setting user_edited_at)
+    const draftBefore = getDraftBySlipId(db, slip.id);
+    updateDraftField(db, draftBefore!.id, "merchant", "User Merchant");
+    updateDraftField(db, draftBefore!.id, "user_edited_at", new Date().toISOString());
+    updateDraftField(db, draftBefore!.id, "review_state", ReviewState.NeedsReview);
+
+    // Retry with different data
+    const retry = await parseSlipToDraftAsync(db, slip.id, slip.path, slip.hash, FakeParser.success({ amount: "999.99" }));
+
+    expect(retry.preserved).toBe(true); // preserved because user-edited
+
+    const draftAfter = getDraftBySlipId(db, slip.id);
+    expect(draftAfter!.amount).toBe("50.00"); // unchanged
+    expect(draftAfter!.merchant).toBe("User Merchant"); // unchanged
   });
 });

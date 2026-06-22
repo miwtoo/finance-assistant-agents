@@ -22,6 +22,7 @@ export interface DraftRecord {
   syncState: string;
   duplicateRisk: number;
   hasUncertainty: number;
+  userEditedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -46,6 +47,7 @@ export interface DraftInput {
   syncState: SyncState;
   duplicateRisk: boolean;
   hasUncertainty: boolean;
+  userEditedAt?: string | null;
 }
 
 /**
@@ -73,6 +75,7 @@ export function initDraftsTable(db: Database): void {
       sync_state TEXT NOT NULL DEFAULT 'unsynced',
       duplicate_risk INTEGER NOT NULL DEFAULT 0,
       has_uncertainty INTEGER NOT NULL DEFAULT 0,
+      user_edited_at TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (slip_id) REFERENCES slips(id) ON DELETE CASCADE
@@ -91,8 +94,9 @@ export function insertDraft(db: Database, input: DraftInput): DraftRecord {
        parsed_currency, merchant, parsed_merchant, parsed_category,
        source_identifier, source_account_hints, source_account_name,
        category, review_state, sync_state, duplicate_risk, has_uncertainty,
+       user_edited_at,
        created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
     [
       input.slipId,
       input.sourcePath,
@@ -112,6 +116,7 @@ export function insertDraft(db: Database, input: DraftInput): DraftRecord {
       input.syncState,
       input.duplicateRisk ? 1 : 0,
       input.hasUncertainty ? 1 : 0,
+      input.userEditedAt ?? null,
     ],
   );
   const row = db
@@ -131,8 +136,9 @@ export function upsertDraft(db: Database, input: DraftInput): DraftRecord {
        parsed_currency, merchant, parsed_merchant, parsed_category,
        source_identifier, source_account_hints, source_account_name,
        category, review_state, sync_state, duplicate_risk, has_uncertainty,
+       user_edited_at,
        created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
      ON CONFLICT(slip_id) DO UPDATE SET
        source_path = excluded.source_path,
        content_hash = excluded.content_hash,
@@ -151,6 +157,7 @@ export function upsertDraft(db: Database, input: DraftInput): DraftRecord {
        sync_state = excluded.sync_state,
        duplicate_risk = excluded.duplicate_risk,
        has_uncertainty = excluded.has_uncertainty,
+       user_edited_at = excluded.user_edited_at,
        updated_at = datetime('now')`,
     [
       input.slipId,
@@ -171,6 +178,7 @@ export function upsertDraft(db: Database, input: DraftInput): DraftRecord {
       input.syncState,
       input.duplicateRisk ? 1 : 0,
       input.hasUncertainty ? 1 : 0,
+      input.userEditedAt ?? null,
     ],
   );
   const row = db
@@ -239,6 +247,7 @@ export function updateDraftField(
     "sync_state",
     "duplicate_risk",
     "has_uncertainty",
+    "user_edited_at",
   ]);
   const colMap: Record<string, string> = {
     parsedMerchant: "parsed_merchant",
@@ -250,6 +259,7 @@ export function updateDraftField(
     syncState: "sync_state",
     duplicateRisk: "duplicate_risk",
     hasUncertainty: "has_uncertainty",
+    userEditedAt: "user_edited_at",
   };
   const col = colMap[field] ?? field;
   if (!allowedFields.has(col)) {
@@ -295,6 +305,7 @@ function mapRow(row: Record<string, unknown>): DraftRecord {
     syncState: row.sync_state as string,
     duplicateRisk: (row.duplicate_risk as number) === 1 ? 1 : 0,
     hasUncertainty: (row.has_uncertainty as number) === 1 ? 1 : 0,
+    userEditedAt: (row.user_edited_at as string) ?? null,
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
   };

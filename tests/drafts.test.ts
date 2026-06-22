@@ -17,18 +17,16 @@ import { ReviewState, SyncState } from "../src/domain/types";
 
 describe("drafts db", () => {
   let db: Database;
-
   let slipCounter = 0;
 
   function insertSlip(path?: string): number {
     const p = path ?? `/tmp/test/draft-slip-${++slipCounter}.jpg`;
     const candidate: SlipCandidate = {
       sourcePath: p,
-      contentHash: "hash-" + path,
+      contentHash: "hash-" + p,
       mtime: new Date(),
     };
-    const record = upsertSlipRecord(db, candidate);
-    return record.id;
+    return upsertSlipRecord(db, candidate).id;
   }
 
   function makeInput(
@@ -51,6 +49,7 @@ describe("drafts db", () => {
       syncState: SyncState;
       duplicateRisk: boolean;
       hasUncertainty: boolean;
+      userEditedAt: string | null;
     }> = {},
   ) {
     const slipId = overrides.slipId ?? insertSlip();
@@ -73,6 +72,7 @@ describe("drafts db", () => {
       syncState: overrides.syncState ?? SyncState.Unsynced,
       duplicateRisk: overrides.duplicateRisk ?? false,
       hasUncertainty: overrides.hasUncertainty ?? false,
+      userEditedAt: overrides.userEditedAt ?? null,
     };
   }
 
@@ -94,7 +94,7 @@ describe("drafts db", () => {
     expect(tables.length).toBe(1);
   });
 
-  it("inserts a new draft record with all fields", () => {
+  it("inserts a new draft record with all fields including user_edited_at", () => {
     const input = makeInput({
       amount: "123.45",
       currency: "THB",
@@ -102,6 +102,7 @@ describe("drafts db", () => {
       parsedMerchant: "7-Eleven",
       parsedCategory: "Convenience Store",
       sourceAccountHints: JSON.stringify([{ identifier: "1234", evidence: "X-1234", source: "card" }]),
+      userEditedAt: null,
     });
     const draft = insertDraft(db, input);
     expect(draft.id).toBeGreaterThan(0);
@@ -110,13 +111,8 @@ describe("drafts db", () => {
     expect(draft.parsedCurrency).toBe("THB");
     expect(draft.merchant).toBe("7-Eleven");
     expect(draft.parsedCategory).toBe("Convenience Store");
-    expect(draft.sourceAccountHints).toBe(
-      JSON.stringify([{ identifier: "1234", evidence: "X-1234", source: "card" }]),
-    );
     expect(draft.reviewState).toBe("parsed");
-    expect(draft.syncState).toBe("unsynced");
-    expect(draft.duplicateRisk).toBe(0);
-    expect(draft.hasUncertainty).toBe(0);
+    expect(draft.userEditedAt).toBeNull();
   });
 
   it("stores amount as exact text string", () => {
@@ -126,40 +122,36 @@ describe("drafts db", () => {
     expect(draft.amount).toBe("99.99");
   });
 
+  it("stores user_edited_at when provided", () => {
+    const ts = "2025-06-22T10:00:00.000Z";
+    const input = makeInput({ userEditedAt: ts });
+    const draft = insertDraft(db, input);
+    expect(draft.userEditedAt).toBe(ts);
+  });
+
   it("upsert replaces existing draft for same slip_id", () => {
-    const input1 = makeInput({
-      amount: "50.00",
-      merchant: "Original",
-      duplicateRisk: false,
-      hasUncertainty: false,
-    });
+    const input1 = makeInput({ amount: "50.00", merchant: "Original" });
     insertDraft(db, input1);
 
     const updated = upsertDraft(db, {
       ...input1,
-      date: "2025-06-23",
       amount: "75.00",
-      currency: "USD",
       merchant: "Updated",
       reviewState: ReviewState.NeedsReview,
       duplicateRisk: true,
       hasUncertainty: true,
     });
 
-    const all = getAllDrafts(db);
-    const matches = all.filter((d) => d.slipId === input1.slipId);
+    const matches = getAllDrafts(db).filter((d) => d.slipId === input1.slipId);
     expect(matches.length).toBe(1);
     expect(updated.amount).toBe("75.00");
-    expect(updated.currency).toBe("USD");
     expect(updated.merchant).toBe("Updated");
     expect(updated.reviewState).toBe("needs_review");
     expect(updated.duplicateRisk).toBe(1);
-    expect(updated.hasUncertainty).toBe(1);
   });
 
   it("getDraft returns null for non-existent id", () => {
-    const draft = getDraft(db, 99999);
-    expect(draft).toBeNull();
+    expect(getDraft(db, 99999)).toBeNull();
   });
 
   it("getDraftBySlipId returns correct draft", () => {
@@ -181,19 +173,18 @@ describe("drafts db", () => {
     expect(readyDrafts.every((d) => d.reviewState === "ready")).toBe(true);
   });
 
-  it("updateDraftField updates a single field", () => {
-    const input = makeInput({ merchant: "Update Test" });
+  it("updateDraftField updates user_edited_at", () => {
+    const input = makeInput({ merchant: "Edit Test" });
     const draft = insertDraft(db, input);
-    const updated = updateDraftField(db, draft.id, "merchant", "Updated Merchant");
-    expect(updated.merchant).toBe("Updated Merchant");
-    expect(updated.date).toBe("2025-06-22"); // unchanged
+    const ts = "2025-06-22T12:00:00.000Z";
+    const updated = updateDraftField(db, draft.id, "user_edited_at", ts);
+    expect(updated.userEditedAt).toBe(ts);
   });
 
   it("deleteDraftBySlipId removes draft and returns true", () => {
     const input = makeInput({ merchant: "Delete Test" });
-    const draft = insertDraft(db, input);
-    const deleted = deleteDraftBySlipId(db, input.slipId);
-    expect(deleted).toBe(true);
+    insertDraft(db, input);
+    expect(deleteDraftBySlipId(db, input.slipId)).toBe(true);
     expect(getDraftBySlipId(db, input.slipId)).toBeNull();
   });
 

@@ -42,6 +42,11 @@ export enum CurrencyCode {
   Unknown = "UNKNOWN",
 }
 
+/** Set of valid currency code strings (upper-case). */
+export const VALID_CURRENCY_CODES: ReadonlySet<string> = new Set(
+  Object.values(CurrencyCode).filter((c) => c !== "UNKNOWN"),
+);
+
 // ─── Parser run status ───────────────────────────────────────
 export enum ParserRunStatus {
   Success = "success",
@@ -49,12 +54,14 @@ export enum ParserRunStatus {
   Failed = "failed",
 }
 
-// ─── Parser field confidence ─────────────────────────────────
-export interface FieldConfidence {
+// ─── Per-field assessment from parser ────────────────────────
+export interface FieldAssessment {
   /** Whether the parser considers this field uncertain */
   uncertain: boolean;
   /** Human-readable reason if uncertain */
   reason?: string;
+  /** Numeric confidence 0..1 (1 = certain, 0 = completely uncertain) */
+  confidence?: number;
 }
 
 // ─── Source account hint from parser ─────────────────────────
@@ -85,8 +92,8 @@ export interface ParseResult {
   sourceAccountHints: SourceAccountHint[];
   /** Parser confidence assessment */
   confidence: "high" | "medium" | "low";
-  /** Per-field uncertainty info */
-  uncertainties: Record<string, FieldConfidence>;
+  /** Per-field assessment info (uncertain + optional numeric confidence) */
+  assessments: Record<string, FieldAssessment>;
   /** Overall status of this parse attempt */
   status: ParserRunStatus;
   /** Raw, immutable provider response payload (JSON-serializable) */
@@ -157,4 +164,6 @@ export interface DraftTransaction {
   syncState: SyncState;
   /** Whether this draft has been flagged as duplicate-risk */
   duplicateRisk: boolean;
+  /** When the user last edited this draft (null = parser-owned) */
+  userEditedAt: string | null;
 }

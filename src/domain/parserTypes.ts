@@ -21,7 +21,9 @@ export interface ParserProvider {
    * - Return status=partial for parses with missing fields or low confidence
    * - Return status=failed for API errors, schema violations, or unparseable images
    * - Set amount as exact decimal string (never number)
-   * - Populate uncertainties with per-field reasons when confidence is low
+   * - Populate assessments with per-field uncertainty and optional numeric
+   *   confidence (0..1) for relevant fields: date, amount, currency,
+   *   parsedMerchant, sourceAccountHints, parsedCategory
    * - Include the raw provider response in providerRawPayload exactly as received
    *   (before any validation or transformation)
    * - Provide sourceAccountHints with identifier, evidence text, and source location
