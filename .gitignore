@@ -1,0 +1,33 @@
+# Bun / Node
+node_modules/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# SQLite databases
+*.db
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+data/
+
+# Logs
+logs/
+*.log
+
+# macOS artifacts
+.DS_Store
+*.swp
+*.swo
+*~
+
+# Build output
+dist/
+coverage/
+
+# IDE
+.idea/
+.vscode/
+*.sublime-workspace

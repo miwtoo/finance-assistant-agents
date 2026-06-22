@@ -1,0 +1,3 @@
+[install]
+# Keep installs deterministic
+frozenLockfile = false
