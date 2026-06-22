@@ -435,4 +435,214 @@ describe("Draft API routes", () => {
     // parsedMerchant should remain unchanged
     expect(body.draft.parsedMerchant).toBe("Test Merchant");
   });
+
+  // ─── Blocker 1: PATCH field allowlist ────────────────────────
+
+  it("rejects PATCH to review_state", async () => {
+    const { draftId } = seedDraft(tmpDbPath);
+    const app = createApp(config);
+    const res = await app.handle(
+      new Request(`http://test/drafts/${draftId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ field: "review_state", value: "ready" }),
+      }),
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.message).toContain("not allowed");
+  });
+
+  it("rejects PATCH to duplicate_risk", async () => {
+    const { draftId } = seedDraft(tmpDbPath);
+    const app = createApp(config);
+    const res = await app.handle(
+      new Request(`http://test/drafts/${draftId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ field: "duplicate_risk", value: "0" }),
+      }),
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects PATCH to has_uncertainty", async () => {
+    const { draftId } = seedDraft(tmpDbPath);
+    const app = createApp(config);
+    const res = await app.handle(
+      new Request(`http://test/drafts/${draftId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ field: "has_uncertainty", value: "0" }),
+      }),
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects PATCH to user_edited_at", async () => {
+    const { draftId } = seedDraft(tmpDbPath);
+    const app = createApp(config);
+    const res = await app.handle(
+      new Request(`http://test/drafts/${draftId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ field: "user_edited_at", value: "2025-06-22" }),
+      }),
+    );
+    expect(res.status).toBe(400);
+  });
+
+  // ─── Blocker 2: Uncertainty resolution ───────────────────────
+
+  it("PATCH with valid amount clears has_uncertainty", async () => {
+    // Create draft with uncertainty
+    const db = openDatabase(tmpDbPath);
+    try {
+      initSlipsTable(db);
+      initDraftsTable(db);
+      const { upsertDraft } = require("../src/db/drafts");
+      const slip = upsertSlipRecord(db, { sourcePath: "/tmp/test/uncertain-amount.jpg", contentHash: "uncertain-amount-hash", mtime: new Date() });
+      const draft = upsertDraft(db, {
+        slipId: slip.id,
+        sourcePath: slip.sourcePath,
+        contentHash: slip.contentHash,
+        date: "2025-06-22",
+        amount: null, // missing amount causes uncertainty
+        currency: "THB",
+        parsedCurrency: "THB",
+        merchant: "Shop",
+        parsedMerchant: "Shop",
+        parsedCategory: null,
+        sourceIdentifier: null,
+        sourceAccountHints: null,
+        sourceAccountName: "My Bank",
+        category: null,
+        reviewState: "needs_review" as any,
+        syncState: "unsynced" as any,
+        duplicateRisk: false,
+        hasUncertainty: true, // starts uncertain
+        userEditedAt: "2025-06-22T00:00:00Z",
+      });
+
+      // Mark-ready should fail due to uncertainty + missing amount
+      const app1 = createApp(config);
+      const res1 = await app1.handle(new Request(`http://test/drafts/${draft.id}/mark-ready`, { method: "POST" }));
+      expect(res1.status).toBe(422);
+
+      // Save valid amount → should clear uncertainty
+      const app2 = createApp(config);
+      const res2 = await app2.handle(
+        new Request(`http://test/drafts/${draft.id}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ field: "amount", value: "150.00" }),
+        }),
+      );
+      expect(res2.status).toBe(200);
+      const body2 = await res2.json();
+      expect(body2.draft.hasUncertainty).toBe(false);
+
+      // Now mark-ready should succeed
+      const app3 = createApp(config);
+      const res3 = await app3.handle(new Request(`http://test/drafts/${draft.id}/mark-ready`, { method: "POST" }));
+      expect(res3.status).toBe(200);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("PATCH with invalid amount does NOT clear uncertainty", async () => {
+    const db = openDatabase(tmpDbPath);
+    try {
+      initSlipsTable(db);
+      initDraftsTable(db);
+      const { upsertDraft } = require("../src/db/drafts");
+      const slip = upsertSlipRecord(db, { sourcePath: "/tmp/test/invalid-amount-uncertain.jpg", contentHash: "invalid-amount-uncertain-hash", mtime: new Date() });
+      const draft = upsertDraft(db, {
+        slipId: slip.id,
+        sourcePath: slip.sourcePath,
+        contentHash: slip.contentHash,
+        date: "2025-06-22",
+        amount: null,
+        currency: "THB",
+        parsedCurrency: "THB",
+        merchant: "Shop",
+        parsedMerchant: "Shop",
+        parsedCategory: null,
+        sourceIdentifier: null,
+        sourceAccountHints: null,
+        sourceAccountName: "My Bank",
+        category: null,
+        reviewState: "needs_review" as any,
+        syncState: "unsynced" as any,
+        duplicateRisk: false,
+        hasUncertainty: true,
+        userEditedAt: "2025-06-22T00:00:00Z",
+      });
+
+      // Save invalid amount format — should NOT clear uncertainty
+      const app = createApp(config);
+      const res = await app.handle(
+        new Request(`http://test/drafts/${draft.id}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ field: "amount", value: "abc" }),
+        }),
+      );
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.draft.hasUncertainty).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("POST /drafts/:id/resolve-uncertainty clears uncertainty when all fields valid", async () => {
+    const { draftId } = seedDraft(tmpDbPath, {
+      amount: "100.00",
+      currency: "THB",
+      merchant: "Shop",
+    });
+    // Seed creates with hasUncertainty=false, so set it to true first
+    const db = openDatabase(tmpDbPath);
+    try {
+      initDraftsTable(db);
+      const { updateDraftField } = require("../src/db/drafts");
+      updateDraftField(db, draftId, "has_uncertainty", "1");
+    } finally {
+      db.close();
+    }
+
+    const app = createApp(config);
+    const res = await app.handle(new Request(`http://test/drafts/${draftId}/resolve-uncertainty`, { method: "POST" }));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    expect(body.uncertaintyResolved).toBe(true);
+  });
+
+  it("POST /drafts/:id/resolve-uncertainty returns errors when fields invalid", async () => {
+    const { draftId } = seedDraft(tmpDbPath, {
+      amount: "abc", // invalid amount
+      currency: "XYZ", // invalid currency
+      merchant: "Shop",
+    });
+
+    const app = createApp(config);
+    const res = await app.handle(new Request(`http://test/drafts/${draftId}/resolve-uncertainty`, { method: "POST" }));
+    expect(res.status).toBe(422);
+    const body = await res.json();
+    expect(body.ok).toBe(false);
+    expect(body.errors.length).toBeGreaterThan(0);
+  });
+
+  // ─── Blocker 3: Mark-ready returns 404 ───────────────────────
+
+  it("returns 404 when mark-ready target draft does not exist", async () => {
+    const app = createApp(config);
+    const res = await app.handle(new Request("http://test/drafts/99999/mark-ready", { method: "POST" }));
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.message).toContain("not found");
+  });
 });

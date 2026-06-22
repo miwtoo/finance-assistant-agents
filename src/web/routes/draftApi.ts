@@ -5,8 +5,21 @@ import { openDatabase } from "../../db/client";
 import { initSlipsTable, getSlipById } from "../../db/slips";
 import { initDraftsTable, getDraft, getDraftBySlipId, updateDraftField } from "../../db/drafts";
 import { parseSlipToDraftAsync, markDraftReady } from "../../domain/draftService";
-import { ReviewState, type ParseResult } from "../../domain/types";
-import { safeParseResult } from "../../domain/parserValidator";
+import { ReviewState } from "../../domain/types";
+import { validateAmount, validateDate, isValidCurrency } from "../../domain/parserValidator";
+
+/**
+ * Fields that the user is allowed to edit via PATCH.
+ * Status/risk/uncertainty/system fields are NOT allowed.
+ */
+const USER_EDITABLE_FIELDS = new Set([
+  "date",
+  "amount",
+  "currency",
+  "merchant",
+  "source_account_name",
+  "category",
+]);
 
 /**
  * POST /candidates/:id/parse
@@ -101,7 +114,6 @@ export function createManualDraftHandler(config: AppConfig) {
         }, 409);
       }
 
-      // Create a blank draft via upsert with needs_review and userEditedAt set
       const { upsertDraft } = await import("../../db/drafts");
       const draft = upsertDraft(db, {
         slipId,
@@ -142,10 +154,32 @@ export function createManualDraftHandler(config: AppConfig) {
 }
 
 /**
+ * Check whether a set of draft fields indicates resolved uncertainty.
+ * Returns true if amount+date+merchant are present and have valid format.
+ */
+function checkFieldsResolveUncertainty(fields: {
+  amount: string | null;
+  date: string | null;
+  merchant: string | null;
+}): boolean {
+  if (!fields.amount || !fields.date || !fields.merchant) return false;
+  if (!validateAmount(fields.amount)) return false;
+  if (!validateDate(fields.date)) return false;
+  return true;
+}
+
+/**
  * PATCH /drafts/:id
  *
- * Save a single field edit. Body: { field: string, value: string|null }.
- * Sets user_edited_at timestamp on any manual edit.
+ * Save a single user-editable field. Body: { field: string, value: string|null }.
+ *
+ * Only allows fields in USER_EDITABLE_FIELDS. Rejects status/risk/uncertainty/system
+ * field edits with 400.
+ *
+ * On successful save:
+ * - Automatically sets user_edited_at timestamp
+ * - Recomputes has_uncertainty: cleared when amount+date+merchant are all valid
+ * - All writes are wrapped in a SQLite transaction
  */
 export function saveDraftFieldHandler(config: AppConfig) {
   return async (context: any): Promise<Response> => {
@@ -159,6 +193,11 @@ export function saveDraftFieldHandler(config: AppConfig) {
       return json({ ok: false, message: "Field name is required" }, 400);
     }
 
+    // Check field is in the user-editable allowlist
+    if (!USER_EDITABLE_FIELDS.has(field)) {
+      return json({ ok: false, message: `Field "${field}" is not allowed for manual edit` }, 400);
+    }
+
     let db: Database | null = null;
     try {
       db = openDatabase(config.dbPath);
@@ -169,15 +208,33 @@ export function saveDraftFieldHandler(config: AppConfig) {
         return json({ ok: false, message: `Draft #${draftId} not found` }, 404);
       }
 
-      // Update the requested field
-      const updated = updateDraftField(db, draftId, field, value ?? null);
+      // Wrap updates in a transaction: field update + user_edited_at + uncertainty recompute
+      const safeDb = db; // non-null at this point
+      const tx = safeDb.transaction(() => {
+        // 1. Update the requested field
+        updateDraftField(safeDb, draftId, field, value ?? null);
 
-      // Set user_edited_at on any manual edit
-      updateDraftField(db, draftId, "user_edited_at", new Date().toISOString());
+        // 2. Always set user_edited_at on manual edit
+        updateDraftField(safeDb, draftId, "user_edited_at", new Date().toISOString());
 
-      // Re-read after both updates
-      const { getDraft: getDraftFn } = await import("../../db/drafts");
-      const final = getDraftFn(db, draftId);
+        // 3. Recompute has_uncertainty
+        const updated = getDraft(safeDb, draftId);
+        if (updated) {
+          const resolved = checkFieldsResolveUncertainty({
+            amount: updated.amount,
+            date: updated.date,
+            merchant: updated.merchant,
+          });
+          if (resolved && updated.hasUncertainty === 1) {
+            updateDraftField(safeDb, draftId, "has_uncertainty", "0");
+          }
+        }
+
+        // Re-read final state
+        return getDraft(safeDb, draftId);
+      });
+
+      const final = tx() as ReturnType<typeof tx>;
 
       return json({
         ok: true,
@@ -213,10 +270,79 @@ export function saveDraftFieldHandler(config: AppConfig) {
 }
 
 /**
+ * POST /drafts/:id/resolve-uncertainty
+ *
+ * Explicit endpoint to clear uncertainty after user review.
+ * Validates all readiness-relevant fields (amount, date, currency, merchant,
+ * sourceAccountName) are present and valid. Clears has_uncertainty if
+ * everything checks out. Returns validation errors if not.
+ */
+export function resolveUncertaintyHandler(config: AppConfig) {
+  return async (context: { params: { id: string } }): Promise<Response> => {
+    const draftId = Number.parseInt(context.params.id, 10);
+    if (Number.isNaN(draftId) || draftId <= 0) {
+      return json({ ok: false, message: "Invalid draft ID" }, 400);
+    }
+
+    let db: Database | null = null;
+    try {
+      db = openDatabase(config.dbPath);
+      initDraftsTable(db);
+
+      const draft = getDraft(db, draftId);
+      if (!draft) {
+        return json({ ok: false, message: `Draft #${draftId} not found` }, 404);
+      }
+
+      const errors: string[] = [];
+
+      if (!draft.amount || !validateAmount(draft.amount)) {
+        errors.push("Amount must be present and valid");
+      }
+      if (!draft.date || !validateDate(draft.date)) {
+        errors.push("Date must be present and valid (YYYY-MM-DD)");
+      }
+      if (!draft.merchant) {
+        errors.push("Merchant is required");
+      }
+      if (!draft.currency || !isValidCurrency(draft.currency)) {
+        errors.push("Currency must be a recognized code");
+      }
+      if (!draft.sourceAccountName) {
+        errors.push("Source account is required");
+      }
+
+      if (errors.length > 0) {
+        return json({
+          ok: false,
+          message: "Cannot resolve uncertainty — fields with issues",
+          errors,
+        }, 422);
+      }
+
+      // Clear uncertainty
+      updateDraftField(db, draftId, "has_uncertainty", "0");
+
+      return json({
+        ok: true,
+        message: "Uncertainty resolved",
+        uncertaintyResolved: true,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return json({ ok: false, message: `Resolve error: ${msg}` }, 500);
+    } finally {
+      db?.close();
+    }
+  };
+}
+
+/**
  * POST /drafts/:id/mark-ready
  *
  * Attempt to mark a draft as ready for sync.
- * Returns validation errors if not ready.
+ * Returns 404 if draft not found.
+ * Returns 422 with validation errors if not ready.
  */
 export function markDraftReadyHandler(config: AppConfig) {
   return async (context: { params: { id: string } }): Promise<Response> => {
@@ -230,20 +356,23 @@ export function markDraftReadyHandler(config: AppConfig) {
       db = openDatabase(config.dbPath);
       initDraftsTable(db);
 
+      // Check draft exists before calling service
+      const draft = getDraft(db, draftId);
+      if (!draft) {
+        return json({ ok: false, message: `Draft #${draftId} not found` }, 404);
+      }
+
       const result = markDraftReady(db, draftId);
 
       if (result.success) {
-        const draft = getDraft(db, draftId);
         return json({
           ok: true,
           message: "Draft marked as ready",
-          draft: draft
-            ? {
-                id: draft.id,
-                reviewState: draft.reviewState,
-                duplicateRisk: draft.duplicateRisk === 1,
-              }
-            : null,
+          draft: {
+            id: draft.id,
+            reviewState: "ready",
+            duplicateRisk: draft.duplicateRisk === 1,
+          },
         });
       }
 

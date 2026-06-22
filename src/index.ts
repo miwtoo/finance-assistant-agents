@@ -9,6 +9,7 @@ import {
   createManualDraftHandler,
   saveDraftFieldHandler,
   markDraftReadyHandler,
+  resolveUncertaintyHandler,
 } from "./web/routes/draftApi";
 
 export interface CreateAppOptions {
@@ -47,6 +48,7 @@ export function createApp(config = loadConfig(), opts?: CreateAppOptions) {
   app.post("/candidates/:id/create-draft", createManualDraftHandler(config));
   app.patch("/drafts/:id", saveDraftFieldHandler(config));
   app.post("/drafts/:id/mark-ready", markDraftReadyHandler(config));
+  app.post("/drafts/:id/resolve-uncertainty", resolveUncertaintyHandler(config));
 
   return app;
 }
