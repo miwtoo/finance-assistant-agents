@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { resolve, relative } from "node:path";
 
 // NOTE: zod is not declared as a dependency. We parse env with manual typed
 // helpers to keep the dependency footprint minimal for MVP 0.
@@ -35,13 +35,32 @@ function envInt(key: string, fallback: number): number {
   return n;
 }
 
+/**
+ * Validate that the DB path is not inside the raw slips directory.
+ * Throws if the guard is violated.
+ */
+export function validateConfigPaths(config: AppConfig): void {
+  const absRawDir = resolve(config.slipsRawDir);
+  const absDbPath = resolve(config.dbPath);
+  const rel = relative(absRawDir, absDbPath);
+  if (!rel.startsWith("..") && rel !== "") {
+    throw new Error(
+      `DB_PATH must not be inside SLIPS_RAW_DIR (` +
+        `resolved slipsRawDir=${absRawDir}, dbPath=${absDbPath})`,
+    );
+  }
+}
+
 export function loadConfig(): AppConfig {
-  return {
+  const slipsRawDir = envStr("SLIPS_RAW_DIR");
+  const dbPath = envStr("DB_PATH", "./data/app.sqlite");
+
+  const config: AppConfig = {
     fireflyBaseUrl: envStr("FIREFLY_BASE_URL"),
     fireflyToken: envStr("FIREFLY_TOKEN"),
     geminiApiKey: envStr("GEMINI_API_KEY"),
-    slipsRawDir: envStr("SLIPS_RAW_DIR"),
-    dbPath: envStr("DB_PATH", "./data/app.sqlite"),
+    slipsRawDir,
+    dbPath,
     cfAccessHeader: envStr(
       "CF_ACCESS_HEADER",
       "Cf-Access-Authenticated-User-Email",
@@ -49,4 +68,7 @@ export function loadConfig(): AppConfig {
     cfAccessDevBypass: envBool("CF_ACCESS_DEV_BYPASS", false),
     port: envInt("PORT", 3000),
   };
+
+  validateConfigPaths(config);
+  return config;
 }

@@ -2,11 +2,9 @@ import { describe, expect, it, afterEach } from "bun:test";
 import { loadConfig } from "../src/config";
 
 describe("config", () => {
-  // Preserve original env to restore after tests
   const ORIGINAL = { ...process.env };
 
   afterEach(() => {
-    // Restore env after each test
     for (const key of Object.keys(process.env)) {
       if (!(key in ORIGINAL)) {
         delete process.env[key];
@@ -18,13 +16,11 @@ describe("config", () => {
   });
 
   it("returns defaults for optional variables when env is not set", () => {
-    // Remove optional env vars to test defaults
     delete process.env.DB_PATH;
     delete process.env.CF_ACCESS_HEADER;
     delete process.env.CF_ACCESS_DEV_BYPASS;
     delete process.env.PORT;
 
-    // Set required vars so loadConfig does not throw
     process.env.FIREFLY_BASE_URL = "http://example.com";
     process.env.FIREFLY_TOKEN = "test-token";
     process.env.GEMINI_API_KEY = "test-key";
@@ -54,7 +50,6 @@ describe("config", () => {
   });
 
   it("throws when required env vars are missing", () => {
-    // Clear everything
     for (const key of Object.keys(process.env)) {
       delete process.env[key];
     }
@@ -71,5 +66,36 @@ describe("config", () => {
 
     const cfg = loadConfig();
     expect(cfg.dbPath).toBe("/custom/path/db.sqlite");
+  });
+
+  it("throws when DB_PATH is inside SLIPS_RAW_DIR (write-guard)", () => {
+    process.env.FIREFLY_BASE_URL = "http://example.com";
+    process.env.FIREFLY_TOKEN = "test";
+    process.env.GEMINI_API_KEY = "test";
+    process.env.SLIPS_RAW_DIR = "/data/slips";
+    process.env.DB_PATH = "/data/slips/app.sqlite";
+
+    expect(() => loadConfig()).toThrow(/inside.*raw|raw.*inside|must not be|write.*guard|db.*path/i);
+  });
+
+  it("throws when DB_PATH resolves to a subdirectory of SLIPS_RAW_DIR", () => {
+    process.env.FIREFLY_BASE_URL = "http://example.com";
+    process.env.FIREFLY_TOKEN = "test";
+    process.env.GEMINI_API_KEY = "test";
+    process.env.SLIPS_RAW_DIR = "/data/slips";
+    process.env.DB_PATH = "/data/slips/sub/db.sqlite";
+
+    expect(() => loadConfig()).toThrow(/inside.*raw|raw.*inside|must not be|write.*guard|db.*path/i);
+  });
+
+  it("allows DB_PATH outside SLIPS_RAW_DIR", () => {
+    process.env.FIREFLY_BASE_URL = "http://example.com";
+    process.env.FIREFLY_TOKEN = "test";
+    process.env.GEMINI_API_KEY = "test";
+    process.env.SLIPS_RAW_DIR = "/data/slips";
+    process.env.DB_PATH = "/data/db/app.sqlite";
+
+    const cfg = loadConfig();
+    expect(cfg.dbPath).toBe("/data/db/app.sqlite");
   });
 });

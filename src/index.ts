@@ -1,8 +1,12 @@
 import { Elysia } from "elysia";
-import { loadConfig } from "./config";
+import { loadConfig, validateConfigPaths } from "./config";
 import { cloudflareAccessGuard } from "./web/middleware/cloudflareAccess";
+import { candidatesPageHandler } from "./web/routes/candidates";
 
 export function createApp(config = loadConfig()) {
+  // Guard: enforce DB_PATH not under SLIPS_RAW_DIR even when config is passed directly
+  validateConfigPaths(config);
+
   const app = new Elysia();
 
   // Cloudflare Access guard — runs on every request
@@ -12,6 +16,8 @@ export function createApp(config = loadConfig()) {
     ok: true,
     service: "finance-assistant-agents",
   }));
+
+  app.get("/candidates", candidatesPageHandler(config));
 
   return app;
 }
