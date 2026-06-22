@@ -9,6 +9,7 @@ import {
   validateParseResult,
   determineInitialReviewState,
   checkReadiness,
+  safeParseResult,
   type ReadinessResult,
 } from "./parserValidator";
 import {
@@ -119,10 +120,14 @@ export async function parseSlipToDraftAsync(
   initParserRunsTable(db);
 
   // 1. Call the parser provider (outside transaction — async I/O)
+  let rawResult: unknown;
   let parseResult: ParseResult;
   let providerError: string | undefined;
   try {
-    parseResult = await provider.parse(sourcePath);
+    rawResult = await provider.parse(sourcePath);
+    // Decode safely: handles null, non-object, missing fields, etc.
+    // This ensures the rest of the flow always receives a valid ParseResult.
+    parseResult = safeParseResult(rawResult);
   } catch (err) {
     providerError = err instanceof Error ? err.message : String(err);
     const run = insertParserRun(db, {
@@ -166,7 +171,7 @@ export async function parseSlipToDraftAsync(
       provider: provider.name,
       model: provider.model,
       status: parseResult.status,
-      rawJson: JSON.stringify(parseResult),
+      rawJson: JSON.stringify(rawResult),
       metadata: JSON.stringify({
         confidence: parseResult.confidence,
         uncertainties,

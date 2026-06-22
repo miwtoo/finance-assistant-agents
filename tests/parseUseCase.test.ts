@@ -392,4 +392,74 @@ describe("parseSlipToDraftAsync — use-case integration", () => {
     expect(draftAfter!.amount).toBe("50.00"); // unchanged
     expect(draftAfter!.merchant).toBe("User Merchant"); // unchanged
   });
+
+  // ─── Blocker 6: Malformed provider responses ─────────────────
+
+  it("records failed parser_run and no draft when provider returns null", async () => {
+    const slip = insertSlip("/tmp/test/null-return.jpg");
+
+    // Provider that returns null at runtime (bypassing TS types)
+    const nullParser: FakeParser = new FakeParser({
+      result: null as unknown as any,
+    });
+
+    const result = await parseSlipToDraftAsync(db, slip.id, slip.path, slip.hash, nullParser);
+
+    expect(result.isMeaningful).toBe(false);
+    expect(result.draft).toBeNull();
+    expect(result.parserRunId).toBeGreaterThan(0);
+
+    const runs = getParserRunsBySlipId(db, slip.id);
+    expect(runs.length).toBe(1);
+    // Should be recorded as failed since null is not a valid parse result
+    expect(runs[0].status).toBe(ParserRunStatus.Failed);
+    // rawJson should store the original null
+    expect(runs[0].rawJson).toBe("null");
+  });
+
+  it("records failed parser_run when provider returns missing status field", async () => {
+    const slip = insertSlip("/tmp/test/no-status.jpg");
+
+    // Object missing the `status` field entirely
+    const malformedParser = new FakeParser({
+      result: {
+        date: "2025-06-22",
+        amount: "123.45",
+        // no status field
+      } as any,
+    });
+
+    const result = await parseSlipToDraftAsync(db, slip.id, slip.path, slip.hash, malformedParser);
+
+    expect(result.isMeaningful).toBe(false);
+    expect(result.draft).toBeNull();
+
+    const runs = getParserRunsBySlipId(db, slip.id);
+    expect(runs.length).toBe(1);
+    // safeParseResult should detect missing status → Failed
+    expect(runs[0].status).toBe(ParserRunStatus.Failed);
+  });
+
+  it("preserves existing draft when malformed provider response is received on retry", async () => {
+    const slip = insertSlip("/tmp/test/malformed-retry-preserve.jpg");
+
+    // First parse creates a draft successfully
+    await parseSlipToDraftAsync(db, slip.id, slip.path, slip.hash, FakeParser.success({ amount: "200.00" }));
+    expect(getDraftBySlipId(db, slip.id)).not.toBeNull();
+
+    // Retry with malformed response
+    const malformedParser = new FakeParser({
+      result: "completely unexpected string" as any,
+    });
+
+    const result = await parseSlipToDraftAsync(db, slip.id, slip.path, slip.hash, malformedParser);
+
+    expect(result.isMeaningful).toBe(false);
+    expect(result.draft).toBeNull();
+
+    // Existing draft must be preserved
+    const draft = getDraftBySlipId(db, slip.id);
+    expect(draft).not.toBeNull();
+    expect(draft!.amount).toBe("200.00");
+  });
 });
