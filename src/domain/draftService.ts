@@ -3,6 +3,7 @@ import type { ParserProvider } from "./parserTypes";
 import {
   ParserRunStatus,
   ReviewState,
+  SyncState,
   type ParseResult,
 } from "./types";
 import {
@@ -229,7 +230,7 @@ export async function parseSlipToDraftAsync(
       sourceAccountName: null,
       category: null,
       reviewState,
-      syncState: "unsynced" as any,
+      syncState: SyncState.Unsynced,
       duplicateRisk,
       hasUncertainty: parsedSlip.hasUncertainty,
       // parser-created drafts start with userEditedAt = null

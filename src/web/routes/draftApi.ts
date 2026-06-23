@@ -5,7 +5,7 @@ import { openDatabase } from "../../db/client";
 import { initSlipsTable, getSlipById, updateSlipParseStatus } from "../../db/slips";
 import { initDraftsTable, getDraft, getDraftBySlipId, updateDraftField } from "../../db/drafts";
 import { parseSlipToDraftAsync, markDraftReady } from "../../domain/draftService";
-import { ReviewState } from "../../domain/types";
+import { ReviewState, SyncState } from "../../domain/types";
 import { validateAmount, validateDate, isValidCurrency } from "../../domain/parserValidator";
 
 /**
@@ -138,7 +138,7 @@ export function createManualDraftHandler(config: AppConfig) {
         sourceAccountName: null,
         category: null,
         reviewState: ReviewState.NeedsReview,
-        syncState: "unsynced" as any,
+        syncState: SyncState.Unsynced,
         duplicateRisk: slip.duplicateRisk,
         hasUncertainty: false,
         userEditedAt: new Date().toISOString(),
