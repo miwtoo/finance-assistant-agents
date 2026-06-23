@@ -3,7 +3,7 @@ import type { ParserProvider } from "../../domain/parserTypes";
 import type { AppConfig } from "../../config";
 import { openDatabase } from "../../db/client";
 import { initSlipsTable, getSlipById, updateSlipParseStatus } from "../../db/slips";
-import { initDraftsTable, getDraft, getDraftBySlipId, updateDraftField } from "../../db/drafts";
+import { initDraftsTable, getDraft, getDraftBySlipId, insertDraft, updateDraftField } from "../../db/drafts";
 import { parseSlipToDraftAsync, markDraftReady } from "../../domain/draftService";
 import { ReviewState, SyncState } from "../../domain/types";
 import { validateAmount, validateDate, isValidCurrency } from "../../domain/parserValidator";
@@ -121,8 +121,7 @@ export function createManualDraftHandler(config: AppConfig) {
         }, 409);
       }
 
-      const { upsertDraft } = await import("../../db/drafts");
-      const draft = upsertDraft(db, {
+      const draft = insertDraft(db, {
         slipId,
         sourcePath: slip.sourcePath,
         contentHash: slip.contentHash,
@@ -153,6 +152,9 @@ export function createManualDraftHandler(config: AppConfig) {
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("UNIQUE constraint failed")) {
+        return json({ ok: false, message: `Draft already exists for slip #${slipId}` }, 409);
+      }
       return json({ ok: false, message: `Draft creation error: ${msg}` }, 500);
     } finally {
       db?.close();
