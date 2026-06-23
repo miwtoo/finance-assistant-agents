@@ -32,6 +32,87 @@ describe("GeminiParserProvider", () => {
   });
 });
 
+describe("GeminiParserProvider status determination", () => {
+  const provider = new GeminiParserProvider("key", "model");
+  const mapResponse = (parsed: Record<string, unknown>) =>
+    (provider as any).mapResponse(parsed);
+
+  it("emits Success when all three required fields present and confidence is high", () => {
+    const result = mapResponse({
+      date: "2025-01-15",
+      amount: "250.00",
+      merchant: "7-Eleven",
+      confidence: "high",
+    });
+    expect(result.status).toBe(ParserRunStatus.Success);
+  });
+
+  it("emits Success when all three required fields present and confidence is medium", () => {
+    const result = mapResponse({
+      date: "2025-01-15",
+      amount: "250.00",
+      merchant: "7-Eleven",
+      confidence: "medium",
+    });
+    expect(result.status).toBe(ParserRunStatus.Success);
+  });
+
+  it("emits Partial when only some required fields are present (missing date)", () => {
+    const result = mapResponse({
+      amount: "250.00",
+      merchant: "7-Eleven",
+      confidence: "high",
+    });
+    expect(result.status).toBe(ParserRunStatus.Partial);
+  });
+
+  it("emits Partial when only some required fields are present (missing amount)", () => {
+    const result = mapResponse({
+      date: "2025-01-15",
+      merchant: "7-Eleven",
+      confidence: "high",
+    });
+    expect(result.status).toBe(ParserRunStatus.Partial);
+  });
+
+  it("emits Partial when only some required fields are present (missing merchant)", () => {
+    const result = mapResponse({
+      date: "2025-01-15",
+      amount: "250.00",
+      confidence: "high",
+    });
+    expect(result.status).toBe(ParserRunStatus.Partial);
+  });
+
+  it("emits Partial when all three fields present but confidence is low", () => {
+    const result = mapResponse({
+      date: "2025-01-15",
+      amount: "250.00",
+      merchant: "7-Eleven",
+      confidence: "low",
+    });
+    expect(result.status).toBe(ParserRunStatus.Partial);
+  });
+
+  it("emits Failed when none of the required fields are present", () => {
+    const result = mapResponse({
+      currency: "THB",
+      confidence: "low",
+    });
+    expect(result.status).toBe(ParserRunStatus.Failed);
+  });
+
+  it("emits Failed when all fields are null", () => {
+    const result = mapResponse({
+      date: null,
+      amount: null,
+      merchant: null,
+      confidence: "low",
+    });
+    expect(result.status).toBe(ParserRunStatus.Failed);
+  });
+});
+
 describe("null parser (app default when no API key)", () => {
   it("returns failed result for any input", () => {
     const { createNullParser } = require("../src/index");

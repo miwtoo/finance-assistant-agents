@@ -189,10 +189,16 @@ export class GeminiParserProvider implements ParserProvider {
 
     // Determine status
     const confidence = safeStr("confidence") ?? "low";
-    const hasAnyField = safeStr("amount") || safeStr("merchant") || safeStr("date");
-    const status: ParserRunStatus = hasAnyField
-      ? ParserRunStatus.Success
-      : ParserRunStatus.Failed;
+    const hasAmount = !!safeStr("amount");
+    const hasMerchant = !!safeStr("merchant");
+    const hasDate = !!safeStr("date");
+    const hasAllRequired = hasAmount && hasMerchant && hasDate;
+    const hasAnyField = hasAmount || hasMerchant || hasDate;
+    const status: ParserRunStatus = !hasAnyField
+      ? ParserRunStatus.Failed
+      : hasAllRequired && confidence !== "low"
+        ? ParserRunStatus.Success
+        : ParserRunStatus.Partial;
 
     return {
       date: safeStr("date"),
