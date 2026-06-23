@@ -237,26 +237,25 @@ describe("GET /candidates", () => {
         join(tmpSlipsDir, "receipt.jpg"),
       ]);
       const slipId = slipsBefore[0]?.id;
+      expect(slipId).toBeDefined();
 
-      if (slipId) {
-        const { FakeParser } = require("./fakes/fakeParser");
-        const app = createApp(
-          {
-            fireflyBaseUrl: "http://test",
-            fireflyToken: "test",
-            geminiApiKey: "test",
-            geminiModel: "gemini-2.5-flash",
-            slipsRawDir: tmpSlipsDir,
-            dbPath: tmpDbPath,
-            cfAccessHeader: "Cf-Access-Authenticated-User-Email",
-            cfAccessDevBypass: true,
-            port: 0,
-          },
-          { parserProvider: FakeParser.success() },
-        );
-        const res = await app.handle(new Request(`http://test/candidates/${slipId}/parse`, { method: "POST" }));
-        expect(res.status).toBe(200);
-      }
+      const { FakeParser } = require("./fakes/fakeParser");
+      const app = createApp(
+        {
+          fireflyBaseUrl: "http://test",
+          fireflyToken: "test",
+          geminiApiKey: "test",
+          geminiModel: "gemini-2.5-flash",
+          slipsRawDir: tmpSlipsDir,
+          dbPath: tmpDbPath,
+          cfAccessHeader: "Cf-Access-Authenticated-User-Email",
+          cfAccessDevBypass: true,
+          port: 0,
+        },
+        { parserProvider: FakeParser.success() },
+      );
+      const res = await app.handle(new Request(`http://test/candidates/${slipId}/parse`, { method: "POST" }));
+      expect(res.status).toBe(200);
     } finally {
       db.close();
     }
@@ -271,31 +270,29 @@ describe("GET /candidates", () => {
   it("shows a draft link after successful parse", async () => {
     // Trigger parse with injected parser
     const db = openDatabase(tmpDbPath);
-    let slipId: number | undefined;
     try {
       initSlipsTable(db);
       const { getSlipsByPaths } = require("../src/db/slips");
       const slips = getSlipsByPaths(db, [join(tmpSlipsDir, "bill.png")]);
-      slipId = slips[0]?.id;
+      const slipId = slips[0]?.id;
+      expect(slipId).toBeDefined();
 
-      if (slipId) {
-        const { FakeParser } = require("./fakes/fakeParser");
-        const app = createApp(
-          {
-            fireflyBaseUrl: "http://test",
-            fireflyToken: "test",
-            geminiApiKey: "test",
-            geminiModel: "gemini-2.5-flash",
-            slipsRawDir: tmpSlipsDir,
-            dbPath: tmpDbPath,
-            cfAccessHeader: "Cf-Access-Authenticated-User-Email",
-            cfAccessDevBypass: true,
-            port: 0,
-          },
-          { parserProvider: FakeParser.success() },
-        );
-        await app.handle(new Request(`http://test/candidates/${slipId}/parse`, { method: "POST" }));
-      }
+      const { FakeParser } = require("./fakes/fakeParser");
+      const app = createApp(
+        {
+          fireflyBaseUrl: "http://test",
+          fireflyToken: "test",
+          geminiApiKey: "test",
+          geminiModel: "gemini-2.5-flash",
+          slipsRawDir: tmpSlipsDir,
+          dbPath: tmpDbPath,
+          cfAccessHeader: "Cf-Access-Authenticated-User-Email",
+          cfAccessDevBypass: true,
+          port: 0,
+        },
+        { parserProvider: FakeParser.success() },
+      );
+      await app.handle(new Request(`http://test/candidates/${slipId}/parse`, { method: "POST" }));
     } finally {
       db.close();
     }
