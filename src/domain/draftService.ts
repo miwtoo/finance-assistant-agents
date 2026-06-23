@@ -47,6 +47,13 @@ export interface ParseDraftResult {
   parserRunId: number;
   /** Human-readable message */
   message: string;
+  /**
+   * Parse status for persisting to the slip record:
+   * - "success": parse produced meaningful data and a draft exists (created or preserved)
+   * - "partial": parse produced meaningful data but no draft (e.g. draft write failed)
+   * - "failed": provider error or parse did not produce meaningful data
+   */
+  parseStatus: "success" | "partial" | "failed";
 }
 
 /**
@@ -145,6 +152,7 @@ export async function parseSlipToDraftAsync(
       preserved: false,
       parserRunId: run.id,
       message: `Parser provider error: ${providerError}`,
+      parseStatus: "failed",
     };
   }
 
@@ -187,6 +195,7 @@ export async function parseSlipToDraftAsync(
         preserved: false,
         parserRunId: run.id,
         message: "Parse did not produce meaningful data. No draft created.",
+        parseStatus: "failed" as const,
         _runId: run.id,
       };
     }
@@ -209,6 +218,7 @@ export async function parseSlipToDraftAsync(
         preserved: true,
         parserRunId: run.id,
         message: `Existing draft preserved (state: ${existingReviewState}). New parse recorded as run #${run.id}.`,
+        parseStatus: "success" as const,
         _runId: run.id,
       };
     }
@@ -248,6 +258,7 @@ export async function parseSlipToDraftAsync(
         preserved: false,
         parserRunId: run.id,
         message: `Draft creation failed: ${errorMessage}`,
+        parseStatus: "partial" as const,
         _runId: run.id,
       };
     }
@@ -267,6 +278,7 @@ export async function parseSlipToDraftAsync(
         reviewState === ReviewState.Parsed
           ? "Draft created and ready for review"
           : "Draft created with items requiring review",
+      parseStatus: "success" as const,
       _runId: run.id,
     };
   });

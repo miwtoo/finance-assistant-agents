@@ -53,12 +53,9 @@ export function parseSlipHandler(config: AppConfig, parserProvider: ParserProvid
         parserProvider,
       );
 
-      // Update slip parse_status and lifecycle_status
-      if (result.draft) {
-        updateSlipParseStatus(db, slipId, "success", "parsed");
-      } else {
-        updateSlipParseStatus(db, slipId, result.isMeaningful ? "partial" : "failed", "parse_failed");
-      }
+      // Update slip parse_status and lifecycle_status using the status persisted by the service
+      const lifecycleStatus = result.parseStatus === "success" ? "parsed" : "parse_failed";
+      updateSlipParseStatus(db, slipId, result.parseStatus, lifecycleStatus);
 
       if (result.draft) {
         return json({
