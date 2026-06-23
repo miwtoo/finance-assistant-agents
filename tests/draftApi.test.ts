@@ -199,6 +199,56 @@ describe("Draft API routes", () => {
     expect(body.message).toContain("already exists");
   });
 
+  it("returns 409 (not 500) when a race causes a UNIQUE constraint on insert (regression)", async () => {
+    // Regression: concurrent requests can both pass the pre-check before either
+    // completes the INSERT. The handler now uses insertDraft (plain INSERT that
+    // throws on conflict) and maps UNIQUE constraint errors to 409, not 500.
+    // We simulate the losing-race request by seeding the draft directly in the
+    // DB before the endpoint call — the important assertion is 409, not 500.
+    const slipId = seedSlip(tmpDbPath, "/tmp/test/race-slip.jpg", "race-hash");
+
+    // Simulate the race "winner" inserting the draft directly into the DB,
+    // bypassing the endpoint's pre-check.
+    const db = openDatabase(tmpDbPath);
+    try {
+      initDraftsTable(db);
+      const { insertDraft } = require("../src/db/drafts");
+      insertDraft(db, {
+        slipId,
+        sourcePath: "/tmp/test/race-slip.jpg",
+        contentHash: "race-hash",
+        date: null,
+        amount: null,
+        currency: null,
+        parsedCurrency: null,
+        merchant: null,
+        parsedMerchant: null,
+        parsedCategory: null,
+        sourceIdentifier: null,
+        sourceAccountHints: null,
+        sourceAccountName: null,
+        category: null,
+        reviewState: "needs_review",
+        syncState: "unsynced",
+        duplicateRisk: false,
+        hasUncertainty: false,
+        userEditedAt: new Date().toISOString(),
+      });
+    } finally {
+      db.close();
+    }
+
+    // "Losing" request arrives — draft already in DB from the race winner.
+    const app = createApp(config);
+    const res = await app.handle(
+      new Request(`http://test/candidates/${slipId}/create-draft`, { method: "POST" }),
+    );
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.ok).toBe(false);
+    expect(body.message).toContain("already exists");
+  });
+
   // ─── PATCH /drafts/:id ───────────────────────────────────────
 
   it("saves a field and sets user_edited_at", async () => {
