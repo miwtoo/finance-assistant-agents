@@ -17,6 +17,9 @@ data/
 logs/
 *.log
 
+# Deep work / agent scratch
+.slim/
+
 # macOS artifacts
 .DS_Store
 *.swp

@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@google/genai": "^2.9.0",
     "elysia": "^1.2.0"
   },
   "devDependencies": {

@@ -119,6 +119,27 @@ export function getSlipsByPaths(db: Database, paths: string[]): SlipRecord[] {
   return rows.map(mapRow);
 }
 
+/** Return a slip record by its id, or null if not found. */
+export function getSlipById(db: Database, id: number): SlipRecord | null {
+  const row = db
+    .query("SELECT * FROM slips WHERE id = ?")
+    .get(id) as Record<string, unknown> | undefined;
+  return row ? mapRow(row) : null;
+}
+
+/** Update the parse_status and lifecycle_status on a slip record. */
+export function updateSlipParseStatus(
+  db: Database,
+  slipId: number,
+  parseStatus: string,
+  lifecycleStatus: string,
+): void {
+  db.run(
+    `UPDATE slips SET parse_status = ?, lifecycle_status = ?, updated_at = datetime('now') WHERE id = ?`,
+    [parseStatus, lifecycleStatus, slipId],
+  );
+}
+
 function mapRow(row: Record<string, unknown>): SlipRecord {
   return {
     id: row.id as number,

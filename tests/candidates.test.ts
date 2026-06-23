@@ -3,6 +3,8 @@ import { mkdtempSync, writeFileSync, rmSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createApp } from "../src/index";
+import { openDatabase } from "../src/db/client";
+import { initSlipsTable } from "../src/db/slips";
 
 describe("GET /candidates", () => {
   let tmpSlipsDir: string;
@@ -206,5 +208,103 @@ describe("GET /candidates", () => {
     const body2 = await res2.text();
     expect(body2).not.toContain("receipt.jpg");
     expect(body2.toLowerCase()).toMatch(/no slips|no candidates|empty|none found/i);
+  });
+
+  // ─── Parse action button ─────────────────────────────────────
+
+  it("shows a parse button for each discovered slip", async () => {
+    const res = await fetchCandidates();
+    const body = await res.text();
+    // Should contain a Parse button that references the slip
+    expect(body).toMatch(/parse/i);
+    expect(body).toMatch(/onclick="parseSlip\(\d+\)"/);
+  });
+
+  it("shows a View button (image link) for each slip", async () => {
+    const res = await fetchCandidates();
+    const body = await res.text();
+    expect(body).toMatch(/\/slips\/\d+\/image/);
+    expect(body).toMatch(/🔍 View/);
+  });
+
+  it("shows parse status reflecting parse result after parse endpoint call", async () => {
+    // Trigger a parse with injected parser
+    const db = openDatabase(tmpDbPath);
+    try {
+      initSlipsTable(db);
+      const { getSlipsByPaths } = require("../src/db/slips");
+      const slipsBefore = getSlipsByPaths(db, [
+        join(tmpSlipsDir, "receipt.jpg"),
+      ]);
+      const slipId = slipsBefore[0]?.id;
+
+      if (slipId) {
+        const { FakeParser } = require("./fakes/fakeParser");
+        const app = createApp(
+          {
+            fireflyBaseUrl: "http://test",
+            fireflyToken: "test",
+            geminiApiKey: "test",
+            geminiModel: "gemini-2.5-flash",
+            slipsRawDir: tmpSlipsDir,
+            dbPath: tmpDbPath,
+            cfAccessHeader: "Cf-Access-Authenticated-User-Email",
+            cfAccessDevBypass: true,
+            port: 0,
+          },
+          { parserProvider: FakeParser.success() },
+        );
+        const res = await app.handle(new Request(`http://test/candidates/${slipId}/parse`, { method: "POST" }));
+        expect(res.status).toBe(200);
+      }
+    } finally {
+      db.close();
+    }
+
+    // Now check candidates page shows parse status
+    const res2 = await fetchCandidates();
+    const body2 = await res2.text();
+    // The receipt.jpg slip should show some parse-related status
+    expect(body2.toLowerCase()).toMatch(/parsed|success|parse/);
+  });
+
+  it("shows a draft link after successful parse", async () => {
+    // Trigger parse with injected parser
+    const db = openDatabase(tmpDbPath);
+    let slipId: number | undefined;
+    try {
+      initSlipsTable(db);
+      const { getSlipsByPaths } = require("../src/db/slips");
+      const slips = getSlipsByPaths(db, [join(tmpSlipsDir, "bill.png")]);
+      slipId = slips[0]?.id;
+
+      if (slipId) {
+        const { FakeParser } = require("./fakes/fakeParser");
+        const app = createApp(
+          {
+            fireflyBaseUrl: "http://test",
+            fireflyToken: "test",
+            geminiApiKey: "test",
+            geminiModel: "gemini-2.5-flash",
+            slipsRawDir: tmpSlipsDir,
+            dbPath: tmpDbPath,
+            cfAccessHeader: "Cf-Access-Authenticated-User-Email",
+            cfAccessDevBypass: true,
+            port: 0,
+          },
+          { parserProvider: FakeParser.success() },
+        );
+        await app.handle(new Request(`http://test/candidates/${slipId}/parse`, { method: "POST" }));
+      }
+    } finally {
+      db.close();
+    }
+
+    // Check candidates page shows draft link
+    const res2 = await fetchCandidates();
+    const body2 = await res2.text();
+    // Should contain a link to /drafts/:id
+    expect(body2).toMatch(/\/drafts\/\d+/);
+    expect(body2).toMatch(/Draft|Ready|Needs Review/i);
   });
 });

@@ -7,6 +7,7 @@ export interface AppConfig {
   fireflyBaseUrl: string;
   fireflyToken: string;
   geminiApiKey: string;
+  geminiModel: string;
   slipsRawDir: string;
   dbPath: string;
   cfAccessHeader: string;
@@ -59,6 +60,7 @@ export function loadConfig(): AppConfig {
     fireflyBaseUrl: envStr("FIREFLY_BASE_URL"),
     fireflyToken: envStr("FIREFLY_TOKEN"),
     geminiApiKey: envStr("GEMINI_API_KEY"),
+    geminiModel: envStr("GEMINI_MODEL", "gemini-2.5-flash"),
     slipsRawDir,
     dbPath,
     cfAccessHeader: envStr(

@@ -1,9 +1,32 @@
 import { Elysia } from "elysia";
 import { loadConfig, validateConfigPaths } from "./config";
+import type { AppConfig } from "./config";
+import type { ParserProvider } from "./domain/parserTypes";
+import { GeminiParserProvider } from "./infra/parser/geminiParserProvider";
 import { cloudflareAccessGuard } from "./web/middleware/cloudflareAccess";
 import { candidatesPageHandler } from "./web/routes/candidates";
+import { slipImageHandler } from "./web/routes/imageProxy";
+import {
+  parseSlipHandler,
+  createManualDraftHandler,
+  saveDraftFieldHandler,
+  markDraftReadyHandler,
+  resolveUncertaintyHandler,
+} from "./web/routes/draftApi";
+import { draftDetailHandler } from "./web/routes/draftDetail";
 
-export function createApp(config = loadConfig()) {
+export interface CreateAppOptions {
+  /** Optional parser provider (injected for testing). Default: none (parse will fail at runtime until Gemini is wired). */
+  parserProvider?: ParserProvider;
+}
+
+/**
+ * Create the application with optional dependency injection.
+ *
+ * @param config - Application configuration (defaults to env-based)
+ * @param opts   - Optional overrides (e.g. parser provider for testing)
+ */
+export function createApp(config = loadConfig(), opts?: CreateAppOptions) {
   // Guard: enforce DB_PATH not under SLIPS_RAW_DIR even when config is passed directly
   validateConfigPaths(config);
 
@@ -12,14 +35,69 @@ export function createApp(config = loadConfig()) {
   // Cloudflare Access guard — runs on every request
   app.onRequest(cloudflareAccessGuard(config));
 
+  // Health
   app.get("/health", () => ({
     ok: true,
     service: "finance-assistant-agents",
   }));
 
+  // Candidates page (existing)
   app.get("/candidates", candidatesPageHandler(config));
 
+  // Raw slip image proxy (read-only, security-guarded)
+  app.get("/slips/:id/image", slipImageHandler(config));
+
+  // Draft API routes
+  const provider = opts?.parserProvider ?? createDefaultParser(config);
+
+  app.post("/candidates/:id/parse", parseSlipHandler(config, provider));
+  app.post("/candidates/:id/create-draft", createManualDraftHandler(config));
+  app.patch("/drafts/:id", saveDraftFieldHandler(config));
+  app.post("/drafts/:id/mark-ready", markDraftReadyHandler(config));
+  app.post("/drafts/:id/resolve-uncertainty", resolveUncertaintyHandler(config));
+
+  // Draft detail page (split-view)
+  app.get("/drafts/:id", draftDetailHandler(config));
+
   return app;
+}
+
+/**
+ * Create a default parser based on available config.
+ * If GEMINI_API_KEY is set and non-empty, returns a GeminiParserProvider.
+ * Otherwise returns a null parser (all calls return failed).
+ */
+function createDefaultParser(config: AppConfig): ParserProvider {
+  if (config.geminiApiKey && config.geminiApiKey.trim().length > 0) {
+    return new GeminiParserProvider(config.geminiApiKey, config.geminiModel);
+  }
+  return createNullParser();
+}
+
+/**
+ * Create a null parser for when no provider is configured.
+ * Returns failed parse results for every call.
+ */
+function createNullParser(): ParserProvider {
+  return {
+    name: "none",
+    model: null,
+    async parse(_imagePath: string) {
+      return {
+        date: null,
+        amount: null,
+        currency: null,
+        parsedMerchant: null,
+        parsedCategory: null,
+        sourceIdentifier: null,
+        sourceAccountHints: [],
+        confidence: "low",
+        assessments: {},
+        status: "failed" as any,
+        providerRawPayload: null,
+      };
+    },
+  };
 }
 
 // When run directly, start the server
@@ -35,3 +113,4 @@ if (isMain) {
 }
 
 export type App = ReturnType<typeof createApp>;
+export { createDefaultParser, createNullParser };
