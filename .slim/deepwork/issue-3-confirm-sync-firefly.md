@@ -12,14 +12,14 @@
 
 ### Category Required for Ready/Sync
 - Category is required for Draft to reach `ready` status.
-- Firefly III categories imported at startup via `GET /api/v1/categories` (lazy+manual refresh — no auto-polling).
+- Firefly III categories imported on demand via `GET /api/v1/categories` (lazy+manual refresh — no auto-polling, no startup import).
 - When parsed slip produces category name not in imported list → `needs-review`; user must explicitly confirm creation or select existing category.
 - New categories are created as flat (no subcategories — Firefly III has no category hierarchy).
 - `category_name` field in Firefly transaction payload; if unknown to Firefly, it auto-creates the category.
 
 ### Source Account — Manual Picker Only (#3 Scope)
 - No auto-matching for MVP 0. User selects from dropdown of imported Firefly asset accounts.
-- Account list imported lazily + manually at startup (like categories).
+- Account list imported lazily + manually on demand (like categories).
 - For #3, `sourceAccountName` must be non-null for Ready gate.
 - Issue #3 uses manual picker; future issue may add slip-hint-based suggestion.
 
@@ -107,6 +107,7 @@
 ## Current TDD Status
 
 ### Done (this slice)
+
 | Layer | Files | Status |
 |-------|-------|--------|
 | Pure functions | `src/domain/syncService.ts` | ✅ 8 tests green |

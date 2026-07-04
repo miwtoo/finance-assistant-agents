@@ -1,4 +1,4 @@
-import type { DraftTransaction, CurrencyCode } from "./types";
+import { ReviewState, type DraftTransaction, type CurrencyCode } from "./types";
 
 // ─── Exported types ───────────────────────────────────────────
 
@@ -23,8 +23,22 @@ export interface SyncConfirmation {
 
 // ─── Helpers ──────────────────────────────────────────────────
 
+/** Add two decimal strings without floating-point precision loss. */
+function addDecimalStrings(a: string, b: string): string {
+  const [ai, af = ""] = a.split(".");
+  const [bi, bf = ""] = b.split(".");
+  const scale = Math.max(af.length, bf.length);
+  const ap = BigInt(ai + af.padEnd(scale, "0"));
+  const bp = BigInt(bi + bf.padEnd(scale, "0"));
+  const sum = (ap + bp).toString().padStart(scale + 1, "0");
+  const intPart = sum.slice(0, -scale);
+  const fracPart = sum.slice(-scale);
+  return scale === 0 ? intPart : `${intPart}.${fracPart}`;
+}
+
 function isReady(d: DraftTransaction): boolean {
   return (
+    d.reviewState === ReviewState.Ready &&
     !!d.date &&
     !!d.amount &&
     !!d.currency &&
@@ -87,7 +101,7 @@ export function buildSyncConfirmation(
     totalCount++;
     const prev = amountsByCurrency[d.currency];
     amountsByCurrency[d.currency] = prev
-      ? (Number(prev) + Number(d.amount)).toFixed(2)
+      ? addDecimalStrings(prev, d.amount)
       : d.amount;
 
     items.push({

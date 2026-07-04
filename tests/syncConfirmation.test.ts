@@ -131,6 +131,37 @@ describe("buildSyncConfirmation", () => {
     expect(blockedItem!.blockReason).toBe("not_ready");
   });
 
+  it("excludes needs-review draft even when required fields are present", () => {
+    const draft = readyDraft({
+      id: "draft-needs-review",
+      reviewState: ReviewState.NeedsReview,
+    });
+    const result = buildSyncConfirmation([draft]);
+
+    expect(result.totalCount).toBe(0);
+    expect(result.amountsByCurrency).toEqual({});
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]!.blocked).toBe(true);
+    expect(result.items[0]!.blockReason).toBe("not_ready");
+  });
+
+  it("sums amounts for multiple ready drafts in the same currency", () => {
+    const d1 = readyDraft({
+      id: "same-1",
+      amount: "100.00",
+      currency: CurrencyCode.THB,
+    });
+    const d2 = readyDraft({
+      id: "same-2",
+      amount: "50.00",
+      currency: CurrencyCode.THB,
+    });
+    const result = buildSyncConfirmation([d1, d2]);
+
+    expect(result.totalCount).toBe(2);
+    expect(result.amountsByCurrency).toEqual({ THB: "150.00" });
+  });
+
   it("handles mixed drafts: some ready, some blocked for different reasons", () => {
     const d1 = readyDraft({
       id: "d1",
