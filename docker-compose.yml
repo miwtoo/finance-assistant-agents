@@ -1,0 +1,21 @@
+services:
+  app:
+    build: .
+    container_name: finance-assistant-agents
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      PORT: "3000"
+      DB_PATH: /app/data/app.sqlite
+      SLIPS_RAW_DIR: /slips/raw
+    volumes:
+      - app-data:/app/data
+      - ${SLIPS_RAW_DIR_HOST:-./slips/raw}:/slips/raw:ro
+    mem_limit: 512m
+    memswap_limit: 768m
+
+volumes:
+  app-data:

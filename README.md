@@ -60,6 +60,28 @@ bun dev
 | `bun test`        | Run tests                   |
 | `bun run typecheck` | TypeScript type checking  |
 
+## Docker on Raspberry Pi
+
+```bash
+cp .env.example .env
+# Edit .env: set FIREFLY_BASE_URL, FIREFLY_TOKEN, GEMINI_API_KEY.
+# Set SLIPS_RAW_DIR_HOST to the Resilio-synced raw slips path on the Pi.
+
+docker compose up -d --build
+```
+
+Useful commands:
+
+```bash
+# View logs
+docker compose logs -f app
+
+# Update after pulling new code
+docker compose up -d --build
+```
+
+Compose mounts the raw slips folder read-only at `/slips/raw`. SQLite data persists in the `app-data` named volume at `/app/data/app.sqlite`.
+
 ## Environment Variables
 
 | Variable             | Required | Default                              | Description                          |
