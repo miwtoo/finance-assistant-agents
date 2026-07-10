@@ -457,11 +457,11 @@ export function renderDraftDetailPage(props: RenderProps): string {
       const dateEl = document.getElementById('date');
       const amountVal = amountEl ? amountEl.value : '';
       const dateVal = dateEl ? dateEl.value : '';
-      if (!/^-?\d+([.,]\d+)?$/.test(amountVal)) {
+      if (!/^-?\\d+([.,]\\d+)?$/.test(amountVal)) {
         showJsError('Amount must be a valid decimal before confirming review.');
         return;
       }
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateVal)) {
+      if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(dateVal)) {
         showJsError('Date must be in YYYY-MM-DD format before confirming review.');
         return;
       }

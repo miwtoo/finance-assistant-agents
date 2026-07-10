@@ -424,6 +424,21 @@ describe("GET /drafts/:id", () => {
     expect(body).toMatch(/read-only/i);
   });
 
+  it("emitted inline JS regex backslashes are preserved in rendered HTML", async () => {
+    const draftId = seedDraft({ hasUncertainty: true, amount: "35.00", merchant: "Shop", sourceAccountName: "Bank" });
+    const app = createApp(config);
+    const res = await app.handle(new Request(`http://test/drafts/${draftId}`));
+    const body = await res.text();
+
+    // Amount regex: \d must survive template literal escaping
+    expect(body).toContain("/^-?\\d+([.,]\\d+)?$/");
+    expect(body).not.toContain("/^-?d+([.,]d+)?$/");
+
+    // Date regex: \d must survive template literal escaping
+    expect(body).toContain("/^\\d{4}-\\d{2}-\\d{2}$/");
+    expect(body).not.toContain("/^d{4}-d{2}-d{2}$/");
+  });
+
   it("shows server error for sync_failed without retry action", async () => {
     const draftId = seedDraft({
       reviewState: "ready",
