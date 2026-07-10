@@ -34,3 +34,6 @@ coverage/
 .idea/
 .vscode/
 *.sublime-workspace
+
+# Private financial docs
+slips/
