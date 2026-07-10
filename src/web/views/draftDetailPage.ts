@@ -14,6 +14,9 @@ export function renderDraftDetailPage(props: RenderProps): string {
   const imageUrl = `/slips/${slip.id}/image`;
   const isReady = draft.reviewState === "ready" || draft.reviewState === "approved";
   const isSynced = draft.syncState === "synced";
+  const isPending = draft.syncState === "pending_sync";
+  const isFailed = draft.syncState === "sync_failed";
+  const isLocked = isSynced || isPending;
 
   const statusBadgeClass = (status: string) => {
     const map: Record<string, string> = {
@@ -146,6 +149,15 @@ export function renderDraftDetailPage(props: RenderProps): string {
 
     .hint-list { font-size: 0.8rem; color: #666; margin-top: 0.375rem; }
     .hint-item { margin-bottom: 0.25rem; }
+    .sync-panel { background: #fafafa; padding: 1rem; border: 1px solid #e0e0e0; border-radius: 6px; }
+    .sync-panel .field-group:last-child { margin-bottom: 0; }
+    .confirm-summary { margin-top: 0.75rem; }
+    .confirm-row { display: flex; justify-content: space-between; padding: 0.375rem 0; border-bottom: 1px solid #eee; font-size: 0.95rem; }
+    .confirm-row:last-child { border-bottom: none; }
+    .confirm-row span:first-child { color: #666; }
+    @media (max-width: 768px) {
+      .confirm-row { flex-direction: column; gap: 0.125rem; }
+    }
   </style>
 </head>
 <body>
@@ -178,6 +190,12 @@ export function renderDraftDetailPage(props: RenderProps): string {
       </div>
       ` : ""}
 
+      ${isFailed && draft.fireflyErrorMessage ? `
+      <div class="banner banner-error" role="alert">
+        <strong>Sync failed.</strong> ${escapeHtml(draft.fireflyErrorMessage)}
+      </div>
+      ` : ""}
+
       ${saveError ? `<div class="banner banner-error" role="alert"><strong>Error:</strong> ${escapeHtml(saveError)}</div>` : ""}
       ${saveSuccess ? `<div class="banner banner-success" role="status">${escapeHtml(saveSuccess)}</div>` : ""}
 
@@ -196,18 +214,18 @@ export function renderDraftDetailPage(props: RenderProps): string {
 
       <div class="field-group">
         <label for="date">Date</label>
-        <input type="date" id="date" name="date" value="${escapeHtml(draft.date ?? "")}" ${isSynced ? "readonly" : ""}>
+        <input type="date" id="date" name="date" value="${escapeHtml(draft.date ?? "")}" ${isLocked ? "readonly" : ""}>
       </div>
 
       <div class="field-group">
         <label for="amount">Amount</label>
-        <input type="text" inputmode="decimal" id="amount" name="amount" value="${escapeHtml(draft.amount ?? "")}" placeholder="123.45" ${isSynced ? "readonly" : ""}>
+        <input type="text" inputmode="decimal" id="amount" name="amount" value="${escapeHtml(draft.amount ?? "")}" placeholder="123.45" ${isLocked ? "readonly" : ""}>
         <div class="help-text">Exact decimal value. Never rounded.</div>
       </div>
 
       <div class="field-group">
         <label for="currency">Currency</label>
-        <select id="currency" name="currency" ${isSynced ? "disabled" : ""}>
+        <select id="currency" name="currency" ${isLocked ? "disabled" : ""}>
           ${currencyOptions}
         </select>
         ${isCurrencyDefaulted ? `
@@ -225,13 +243,13 @@ export function renderDraftDetailPage(props: RenderProps): string {
 
       <div class="field-group">
         <label for="merchant">Normalized merchant</label>
-        <input type="text" id="merchant" name="merchant" value="${escapeHtml(draft.merchant ?? "")}" placeholder="Clean merchant name" ${isSynced ? "readonly" : ""}>
+        <input type="text" id="merchant" name="merchant" value="${escapeHtml(draft.merchant ?? "")}" placeholder="Clean merchant name" ${isLocked ? "readonly" : ""}>
         <div class="help-text">Clean name used as the Firefly destination account.</div>
       </div>
 
       <div class="field-group">
         <label for="category">Category (optional)</label>
-        <select id="category" name="category" ${isSynced ? "disabled" : ""}>
+        <select id="category" name="category" ${isLocked ? "disabled" : ""}>
           <option value="" ${!draft.category ? "selected" : ""}>— None —</option>
           ${categoryOptions}
         </select>
@@ -239,7 +257,7 @@ export function renderDraftDetailPage(props: RenderProps): string {
 
       <div class="field-group">
         <label for="source_account_name">Source account</label>
-        <input type="text" id="source_account_name" name="source_account_name" value="${escapeHtml(draft.sourceAccountName ?? "")}" placeholder="e.g. Kasikorn Savings" ${isSynced ? "readonly" : ""}>
+        <input type="text" id="source_account_name" name="source_account_name" value="${escapeHtml(draft.sourceAccountName ?? "")}" placeholder="e.g. Kasikorn Savings" ${isLocked ? "readonly" : ""}>
         ${sourceAccountHints.length > 0 ? `
           <div class="hint-list">
             <div class="hint-item">Hints from slip:</div>
@@ -249,23 +267,115 @@ export function renderDraftDetailPage(props: RenderProps): string {
         <div class="help-text">Must match a Firefly asset account. Not auto-detected from folders.</div>
       </div>
 
-      ${!isSynced ? `
+      ${!isLocked ? `
       <div class="actions">
         <button type="button" class="btn btn-secondary" onclick="saveDraft()">Save as needs review</button>
         ${draft.hasUncertainty ? `<button type="button" class="btn btn-secondary" onclick="resolveUncertainty()" ${!hasValidFieldsForResolve ? "disabled" : ""}>Confirm reviewed fields</button>` : ""}
         <button type="button" class="btn btn-primary" onclick="markReady()" ${draft.duplicateRisk || draft.hasUncertainty || !hasValidFieldsForResolve ? "disabled" : ""}>Mark ready</button>
       </div>
       ${!hasValidFieldsForResolve && !draft.duplicateRisk && !draft.hasUncertainty ? '<div class="help-text">Fill all required fields to enable Mark ready.</div>' : ""}
+      ` : isSynced ? `
+      <div class="banner banner-success" role="status">
+        This draft is synced and read-only.
+        ${draft.fireflyGroupId || draft.fireflyJournalId ? `
+        <div class="help-text" style="margin-top:0.5rem;">
+          Firefly group: ${escapeHtml(draft.fireflyGroupId ?? "—")}<br>
+          Firefly journal: ${escapeHtml(draft.fireflyJournalId ?? "—")}
+          ${draft.fireflyExternalId ? `<br>External ID: ${escapeHtml(draft.fireflyExternalId)}` : ""}
+        </div>
+        ` : ""}
+      </div>
       ` : `
-      <div class="banner banner-success" role="status">This draft is synced and read-only.</div>
+      <div class="banner banner-warning" role="status">
+        <strong>Sync result unknown.</strong> This draft is locked while the previous sync outcome is confirmed. Do not submit a new transaction.
+      </div>
       `}
       </form>
+
+      ${draft.reviewState === "ready" && draft.syncState === "unsynced" && !draft.duplicateRisk ? `
+      <div class="section-title">Sync to Firefly</div>
+      <div class="sync-panel" id="syncPanel">
+        <div class="loading-text" id="syncLoading">Loading sync options…</div>
+        <div id="syncOptions" style="display:none;">
+          <div class="field-group">
+            <label>Source account (matched)</label>
+            <div class="audit-field" id="syncSourceAccount">—</div>
+            <div class="help-text">Exact-matched Firefly asset account. Sync is blocked if no match is found.</div>
+          </div>
+          <div class="field-group">
+            <label for="syncDestinationAccount">Destination (expense) account</label>
+            <select id="syncDestinationAccount">
+              <option value="">— Select expense account —</option>
+            </select>
+            <div class="help-text">Choose the Firefly expense account for this withdrawal.</div>
+          </div>
+          <div id="syncError" class="banner banner-error" role="alert" style="display:none;"></div>
+          <div class="actions" style="margin-top:1rem;">
+            <button type="button" id="syncReviewBtn" class="btn btn-primary" onclick="showSyncConfirmation()" disabled>Review and sync</button>
+          </div>
+        </div>
+        <div id="syncConfirm" style="display:none;">
+          <div class="banner banner-warning" role="status">
+            <strong>Confirm one withdrawal</strong>
+            <div class="confirm-summary">
+              <div class="confirm-row"><span>Merchant</span> <span id="confirmMerchant"></span></div>
+              <div class="confirm-row"><span>Amount</span> <span id="confirmAmount"></span></div>
+              <div class="confirm-row"><span>Date</span> <span id="confirmDate"></span></div>
+              <div class="confirm-row"><span>From</span> <span id="confirmSource"></span></div>
+              <div class="confirm-row"><span>To</span> <span id="confirmDestination"></span></div>
+            </div>
+          </div>
+          <div id="confirmError" class="banner banner-error" role="alert" style="display:none;"></div>
+          <div class="actions">
+            <button type="button" id="cancelSyncBtn" class="btn btn-secondary" onclick="cancelSyncConfirm()">Cancel</button>
+            <button type="button" id="confirmSyncBtn" class="btn btn-primary" onclick="submitSync()">Confirm sync</button>
+            <span class="loading-text" id="syncPosting" style="display:none;">Syncing…</span>
+          </div>
+        </div>
+      </div>
+      ` : ""}
+
+      ${isPending ? `
+      <div class="section-title">Sync recovery</div>
+      <div class="sync-panel" id="recoverPanel">
+        <div class="banner banner-warning" role="status">
+          <strong>Sync outcome unknown.</strong> A previous request may have created a Firefly transaction. Use recovery to check without creating a duplicate.
+        </div>
+        <div id="recoverOptions">
+          <div class="actions" style="margin-top:1rem;">
+            <button type="button" id="recoverBtn" class="btn btn-primary" onclick="showRecoverConfirmation()">Recover sync</button>
+          </div>
+        </div>
+        <div id="recoverConfirm" style="display:none;">
+          <div class="banner banner-warning" role="status">
+            <strong>Recover this sync</strong>
+            <div class="help-text" style="margin-top:0.5rem;">
+              This will first search Firefly for the existing transaction using external ID <code>${escapeHtml(draft.fireflyExternalId ?? "")}</code>. If the transaction is not found, the identical withdrawal will be resent, which may create the original intended withdrawal.
+            </div>
+          </div>
+          <div id="recoverError" class="banner banner-error" role="alert" style="display:none;"></div>
+          <div class="actions">
+            <button type="button" id="cancelRecoverBtn" class="btn btn-secondary" onclick="cancelRecoverConfirm()">Cancel</button>
+            <button type="button" id="confirmRecoverBtn" class="btn btn-primary" onclick="submitRecover()">Confirm recovery</button>
+            <span class="loading-text" id="recoverPosting" style="display:none;">Checking…</span>
+          </div>
+        </div>
+        <div id="recoverStillPending" class="banner banner-warning" role="status" style="display:none; margin-bottom:0;">
+          Still cannot confirm the Firefly state. Draft remains pending.
+        </div>
+      </div>
+      ` : ""}
     </div>
   </div>
 
   <script>
     const draftId = ${draft.id};
     const slipId = ${draft.slipId};
+    const draftMerchant = ${JSON.stringify(draft.merchant ?? "")};
+    const draftAmount = ${JSON.stringify(draft.amount ?? "")};
+    const draftCurrency = ${JSON.stringify(draft.currency ?? "")};
+    const draftDate = ${JSON.stringify(draft.date ?? "")};
+    let pendingDestinationAccountId = '';
 
     function setLoading(id, loading) {
       const el = document.getElementById(id);
@@ -382,6 +492,228 @@ export function renderDraftDetailPage(props: RenderProps): string {
         showJsError('Error: ' + (e.message || 'Network error'));
       }
     }
+
+    function setSyncLoading(loading) {
+      const loadingEl = document.getElementById('syncLoading');
+      if (loadingEl) loadingEl.style.display = loading ? 'block' : 'none';
+    }
+    function showSyncOptions() {
+      const optionsEl = document.getElementById('syncOptions');
+      const confirmEl = document.getElementById('syncConfirm');
+      if (optionsEl) optionsEl.style.display = 'block';
+      if (confirmEl) confirmEl.style.display = 'none';
+    }
+    function hideSyncOptions() {
+      const optionsEl = document.getElementById('syncOptions');
+      if (optionsEl) optionsEl.style.display = 'none';
+    }
+    function setSyncPosting(posting) {
+      const reviewBtn = document.getElementById('syncReviewBtn');
+      const confirmBtn = document.getElementById('confirmSyncBtn');
+      const cancelBtn = document.getElementById('cancelSyncBtn');
+      const select = document.getElementById('syncDestinationAccount');
+      const postingEl = document.getElementById('syncPosting');
+      if (reviewBtn) reviewBtn.disabled = posting;
+      if (confirmBtn) confirmBtn.disabled = posting;
+      if (cancelBtn) cancelBtn.disabled = posting;
+      if (select) select.disabled = posting;
+      if (postingEl) postingEl.style.display = posting ? 'inline' : 'none';
+    }
+    function showSyncError(msg) {
+      const el = document.getElementById('syncError');
+      if (el) { el.textContent = msg; el.style.display = 'block'; }
+    }
+    function hideSyncError() {
+      const el = document.getElementById('syncError');
+      if (el) { el.style.display = 'none'; }
+    }
+    function showConfirmError(msg) {
+      const el = document.getElementById('confirmError');
+      if (el) { el.textContent = msg; el.style.display = 'block'; }
+    }
+    function hideConfirmError() {
+      const el = document.getElementById('confirmError');
+      if (el) { el.style.display = 'none'; }
+    }
+
+    async function loadSyncOptions() {
+      if (!document.getElementById('syncPanel')) return;
+      setSyncLoading(true);
+      hideSyncError();
+      try {
+        const res = await fetch('/drafts/' + draftId + '/sync-options');
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          showSyncError('Could not load sync options: ' + (data.message || res.statusText || 'Unknown error'));
+          setSyncLoading(false);
+          return;
+        }
+        if (!data.sourceAccount) {
+          showSyncError('No source account matched in Firefly. Check the source account name and try again.');
+          setSyncLoading(false);
+          return;
+        }
+        const sourceEl = document.getElementById('syncSourceAccount');
+        if (sourceEl) sourceEl.textContent = data.sourceAccount.name || '—';
+        const select = document.getElementById('syncDestinationAccount');
+        if (select) {
+          while (select.options.length > 1) select.remove(1);
+          const accounts = Array.isArray(data.destinationAccounts) ? data.destinationAccounts : [];
+          accounts.forEach(function(acc) {
+            const opt = document.createElement('option');
+            opt.value = String(acc.id);
+            opt.textContent = String(acc.name);
+            select.appendChild(opt);
+          });
+          select.dataset.sourceAccountId = String(data.sourceAccount.id);
+          select.dataset.sourceAccountName = data.sourceAccount.name || '';
+          select.addEventListener('change', function() {
+            const btn = document.getElementById('syncReviewBtn');
+            if (btn) btn.disabled = !select.value;
+          });
+        }
+        showSyncOptions();
+        setSyncLoading(false);
+      } catch (e) {
+        showSyncError('Could not load sync options: ' + (e.message || 'Network error'));
+        setSyncLoading(false);
+      }
+    }
+
+    function showSyncConfirmation() {
+      hideSyncError();
+      const select = document.getElementById('syncDestinationAccount');
+      const destinationAccountId = select ? select.value : '';
+      if (!destinationAccountId) {
+        showSyncError('Select a destination expense account first.');
+        return;
+      }
+      pendingDestinationAccountId = destinationAccountId;
+      const sourceName = select ? (select.dataset.sourceAccountName || 'Matched source') : 'Matched source';
+      const destinationName = select ? select.options[select.selectedIndex].text : '';
+
+      const merchantEl = document.getElementById('confirmMerchant');
+      const amountEl = document.getElementById('confirmAmount');
+      const dateEl = document.getElementById('confirmDate');
+      const sourceEl = document.getElementById('confirmSource');
+      const destinationEl = document.getElementById('confirmDestination');
+      if (merchantEl) merchantEl.textContent = draftMerchant || '—';
+      if (amountEl) amountEl.textContent = (draftAmount ? draftAmount + ' ' + draftCurrency : '—');
+      if (dateEl) dateEl.textContent = draftDate || '—';
+      if (sourceEl) sourceEl.textContent = sourceName;
+      if (destinationEl) destinationEl.textContent = destinationName;
+
+      hideSyncOptions();
+      const confirmEl = document.getElementById('syncConfirm');
+      if (confirmEl) {
+        confirmEl.style.display = 'block';
+        confirmEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    }
+
+    function cancelSyncConfirm() {
+      pendingDestinationAccountId = '';
+      hideConfirmError();
+      showSyncOptions();
+    }
+
+    async function submitSync() {
+      hideJsError();
+      hideConfirmError();
+      setSyncPosting(true);
+      try {
+        const res = await fetch('/drafts/' + draftId + '/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ destinationAccountId: pendingDestinationAccountId })
+        });
+        const data = await res.json();
+        if (data.ok) {
+          window.location.reload();
+        } else if (res.status === 202 || data.outcome === 'FIREFLY_OUTCOME_UNKNOWN' || (data.draft && data.draft.syncState === 'pending_sync')) {
+          // Outcome unknown: reload to show the pending/recovery UI
+          window.location.reload();
+        } else {
+          showConfirmError('Sync failed: ' + (data.errors ? data.errors.join(', ') : data.message));
+          setSyncPosting(false);
+        }
+      } catch (e) {
+        showConfirmError('Sync error: ' + (e.message || 'Network error'));
+        setSyncPosting(false);
+      }
+    }
+
+    function setRecoverPosting(posting) {
+      const recoverBtn = document.getElementById('recoverBtn');
+      const confirmBtn = document.getElementById('confirmRecoverBtn');
+      const cancelBtn = document.getElementById('cancelRecoverBtn');
+      const postingEl = document.getElementById('recoverPosting');
+      if (recoverBtn) recoverBtn.disabled = posting;
+      if (confirmBtn) confirmBtn.disabled = posting;
+      if (cancelBtn) cancelBtn.disabled = posting;
+      if (postingEl) postingEl.style.display = posting ? 'inline' : 'none';
+    }
+    function showRecoverError(msg) {
+      const el = document.getElementById('recoverError');
+      if (el) { el.textContent = msg; el.style.display = 'block'; }
+    }
+    function hideRecoverError() {
+      const el = document.getElementById('recoverError');
+      if (el) { el.style.display = 'none'; }
+    }
+    function showRecoverStillPending() {
+      const el = document.getElementById('recoverStillPending');
+      if (el) el.style.display = 'block';
+    }
+    function hideRecoverStillPending() {
+      const el = document.getElementById('recoverStillPending');
+      if (el) el.style.display = 'none';
+    }
+
+    function showRecoverConfirmation() {
+      hideRecoverError();
+      hideRecoverStillPending();
+      const optionsEl = document.getElementById('recoverOptions');
+      const confirmEl = document.getElementById('recoverConfirm');
+      if (optionsEl) optionsEl.style.display = 'none';
+      if (confirmEl) {
+        confirmEl.style.display = 'block';
+        confirmEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    }
+
+    function cancelRecoverConfirm() {
+      hideRecoverError();
+      const optionsEl = document.getElementById('recoverOptions');
+      const confirmEl = document.getElementById('recoverConfirm');
+      if (optionsEl) optionsEl.style.display = 'block';
+      if (confirmEl) confirmEl.style.display = 'none';
+    }
+
+    async function submitRecover() {
+      hideJsError();
+      hideRecoverError();
+      setRecoverPosting(true);
+      try {
+        const res = await fetch('/drafts/' + draftId + '/sync/recover', { method: 'POST' });
+        const data = await res.json();
+        if (data.ok) {
+          window.location.reload();
+        } else if (res.status === 202 || data.outcome === 'FIREFLY_OUTCOME_UNKNOWN' || (data.draft && data.draft.syncState === 'pending_sync')) {
+          showRecoverStillPending();
+          setRecoverPosting(false);
+          cancelRecoverConfirm();
+        } else {
+          showRecoverError('Recovery failed: ' + (data.errors ? data.errors.join(', ') : data.message));
+          setRecoverPosting(false);
+        }
+      } catch (e) {
+        showRecoverError('Recovery error: ' + (e.message || 'Network error'));
+        setRecoverPosting(false);
+      }
+    }
+
+    loadSyncOptions();
   </script>
 </body>
 </html>`;

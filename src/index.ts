@@ -12,6 +12,9 @@ import {
   saveDraftFieldHandler,
   markDraftReadyHandler,
   resolveUncertaintyHandler,
+  syncOptionsHandler,
+  syncDraftHandler,
+  syncRecoverHandler,
 } from "./web/routes/draftApi";
 import { draftDetailHandler } from "./web/routes/draftDetail";
 
@@ -55,6 +58,11 @@ export function createApp(config = loadConfig(), opts?: CreateAppOptions) {
   app.patch("/drafts/:id", saveDraftFieldHandler(config));
   app.post("/drafts/:id/mark-ready", markDraftReadyHandler(config));
   app.post("/drafts/:id/resolve-uncertainty", resolveUncertaintyHandler(config));
+
+  // Sync endpoints
+  app.get("/drafts/:id/sync-options", syncOptionsHandler(config));
+  app.post("/drafts/:id/sync/recover", syncRecoverHandler(config));
+  app.post("/drafts/:id/sync", syncDraftHandler(config));
 
   // Draft detail page (split-view)
   app.get("/drafts/:id", draftDetailHandler(config));

@@ -1,5 +1,14 @@
+import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import type { ReviewState, SyncState } from "../domain/types";
+
+// ─── Firefly link persistence ─────────────────────────────────
+export interface FireflyLink {
+  fireflyJournalId: string | null;
+  fireflyGroupId: string | null;
+  fireflySyncedAt: string | null;
+  fireflyExternalId: string | null;
+}
 
 /** Schema for the `drafts` table. */
 export interface DraftRecord {
@@ -25,7 +34,44 @@ export interface DraftRecord {
   userEditedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  // Firefly link persistence (nullable — added via migration)
+  fireflyTransactionId: string | null; // legacy column, kept for backward compat but not written to
+  fireflyJournalId: string | null;
+  fireflyGroupId: string | null;
+  fireflySyncedAt: string | null;
+  fireflyExternalId: string | null;
+  // Outbound persistence (added via migration)
+  fireflyOutboundPayload: string | null;
+  fireflyStartedAt: string | null;
+  fireflyErrorCode: string | null;
+  fireflyErrorMessage: string | null;
+  fireflyOutcome: string | null;
+  // Recovery lease + revision (added via migration)
+  fireflyLeaseToken: string | null;
+  fireflyLeaseAcquiredAt: string | null;
+  fireflyLeaseExpiresAt: string | null;
+  revision: number;
 }
+
+// ─── Lease TTL constants ───────────────────────────────────
+//
+// Invariant: LEASE_TTL_MS ≥ 3 × FIREFLY_REQUEST_TIMEOUT_MS.
+//
+// A leased workflow (sync or recovery) makes at most two outbound Firefly
+// calls — search + POST (or search + complete-from-search) — each bounded
+// by FIREFLY_REQUEST_TIMEOUT_MS.  The 3× ratio gives:
+//   - 1× for the worst-case two-call workflow
+//   - 1× margin for scheduling/processing overhead
+//   - 1× grace so that a lease acquired late in the window still covers
+//     the full workflow before expiry
+//
+// Any change to either constant must preserve: TTL ≥ 3 × timeout.
+
+/** Request timeout for Firefly HTTP calls. */
+export const FIREFLY_REQUEST_TIMEOUT_MS = 20_000;
+
+/** Lease TTL in ms. Must be ≥ 3 × FIREFLY_REQUEST_TIMEOUT_MS. */
+export const LEASE_TTL_MS = 60_000;
 
 /** Input for creating or updating a draft. */
 export interface DraftInput {
@@ -50,8 +96,60 @@ export interface DraftInput {
   userEditedAt?: string | null;
 }
 
+// ─── Installation ID ─────────────────────────────────────────
+
+/**
+ * Get or create the persistent installation ID.
+ * Stored in the `app_metadata` singleton table.
+ * Uses INSERT OR IGNORE + reread for concurrent init safety.
+ */
+export function getOrCreateInstallationId(db: Database): string {
+  db.run(`
+    CREATE TABLE IF NOT EXISTS app_metadata (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+  // Try read first (fast path)
+  const row = db
+    .query("SELECT value FROM app_metadata WHERE key = ?")
+    .get("installation_id") as { value: string } | undefined;
+  if (row) return row.value;
+  // INSERT OR IGNORE handles concurrent init: one wins, others ignore
+  const id = randomUUID();
+  db.run(
+    "INSERT OR IGNORE INTO app_metadata (key, value, updated_at) VALUES (?, ?, datetime('now'))",
+    ["installation_id", id],
+  );
+  // Reread to get the value that actually won
+  const winner = db
+    .query("SELECT value FROM app_metadata WHERE key = ?")
+    .get("installation_id") as { value: string };
+  return winner.value;
+}
+
+/**
+ * Build the stable namespaced external ID for a draft.
+ * Format: finance-assistant:<installationId>:draft:<draftId>
+ */
+export function buildExternalId(
+  installationId: string,
+  draftId: number,
+): string {
+  return `finance-assistant:${installationId}:draft:${draftId}`;
+}
+
+// ─── Table init + migrations ─────────────────────────────────
+
 /**
  * Create the `drafts` table if it does not exist.
+ * Strictly additive migrations: preflight PRAGMA table_info, only add missing columns.
+ *
+ * Migration concurrency: ALTER TABLE ADD COLUMN is idempotent under SQLite —
+ * if the column already exists, SQLite raises "duplicate column name" which we
+ * tolerate. CREATE TABLE IF NOT EXISTS is inherently safe. This makes
+ * concurrent app initialization safe without explicit transaction wrapping.
  */
 export function initDraftsTable(db: Database): void {
   db.run(`
@@ -81,7 +179,45 @@ export function initDraftsTable(db: Database): void {
       FOREIGN KEY (slip_id) REFERENCES slips(id) ON DELETE CASCADE
     );
   `);
+  // Strictly additive migrations — check PRAGMA table_info first
+  const existingColumns = getColumnNames(db, "drafts");
+  const migrations: Array<[string, string]> = [
+    ["firefly_transaction_id", "TEXT"],       // legacy column, kept for backward compat
+    ["firefly_journal_id", "TEXT"],
+    ["firefly_group_id", "TEXT"],
+    ["firefly_synced_at", "TEXT"],
+    ["firefly_external_id", "TEXT"],
+    ["firefly_outbound_payload", "TEXT"],
+    ["firefly_started_at", "TEXT"],
+    ["firefly_error_code", "TEXT"],
+    ["firefly_error_message", "TEXT"],
+    ["firefly_outcome", "TEXT"],
+    ["firefly_lease_token", "TEXT"],
+    ["firefly_lease_acquired_at", "TEXT"],
+    ["firefly_lease_expires_at", "TEXT"],
+    ["revision", "INTEGER NOT NULL DEFAULT 0"],
+  ];
+  for (const [col, type] of migrations) {
+    if (!existingColumns.has(col)) {
+      try {
+        db.run(`ALTER TABLE drafts ADD COLUMN ${col} ${type}`);
+      } catch (e: any) {
+        // Tolerate "duplicate column name" from concurrent migration
+        if (!e?.message?.includes("duplicate column")) throw e;
+      }
+    }
+  }
 }
+
+/**
+ * Get column names for a table via PRAGMA table_info.
+ */
+function getColumnNames(db: Database, table: string): Set<string> {
+  const cols = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  return new Set(cols.map((c) => c.name));
+}
+
+// ─── Standard CRUD ───────────────────────────────────────────
 
 /**
  * Insert a new draft record. Returns the inserted DraftRecord.
@@ -225,7 +361,11 @@ export function getDraftsByReviewState(
   return rows.map(mapRow);
 }
 
-/** Update a single field on a draft by id. Returns the updated record. */
+/**
+ * Update a single field on a draft by id. Returns the updated record.
+ * Increments revision on every write (P1.4 invariant: every user edit or
+ * state-changing modification increments revision).
+ */
 export function updateDraftField(
   db: Database,
   id: number,
@@ -265,8 +405,9 @@ export function updateDraftField(
   if (!allowedFields.has(col)) {
     throw new Error(`Invalid field: ${field}`);
   }
+  // Increment revision on every write (P1.4)
   db.run(
-    `UPDATE drafts SET ${col} = ?, updated_at = datetime('now') WHERE id = ?`,
+    `UPDATE drafts SET ${col} = ?, revision = revision + 1, updated_at = datetime('now') WHERE id = ?`,
     [value, id],
   );
   const row = db
@@ -283,6 +424,268 @@ export function deleteDraftBySlipId(
   const result = db.run("DELETE FROM drafts WHERE slip_id = ?", [slipId]);
   return (result.changes ?? 0) > 0;
 }
+
+// ─── Sync state management ───────────────────────────────────
+
+/**
+ * Block edits on drafts that are pending_sync or synced.
+ * Returns true if the draft is in a mutable state, false if blocked.
+ */
+export function isDraftMutable(db: Database, id: number): boolean {
+  const draft = getDraft(db, id);
+  if (!draft) return false;
+  return draft.syncState !== "pending_sync" && draft.syncState !== "synced";
+}
+
+/**
+ * Atomic CAS claim: transition from ready+unsynced+not-duplicate-risk
+ * to pending_sync. Writes outbound payload + started timestamp + external ID
+ * + lease token. Includes expected revision to prevent stale payload ABA.
+ *
+ * P1.4 Invariant: After account fetch, the caller MUST re-read the draft
+ * inside this claim transaction and build the payload from the snapshot.
+ * The payload passed here is built from the same snapshot that passed the
+ * revision check, preventing stale payload ABA where an edit races with sync.
+ *
+ * Returns the updated draft if claim succeeded, null if CAS failed
+ * (draft not in expected state or revision mismatch).
+ */
+export function claimDraftForSync(
+  db: Database,
+  id: number,
+  installationId: string,
+  outboundPayload: string,
+  expectedRevision: number,
+): DraftRecord | null {
+  const now = new Date().toISOString();
+  const expiresAt = new Date(Date.now() + LEASE_TTL_MS).toISOString();
+  const externalId = buildExternalId(installationId, id);
+  const leaseToken = randomUUID();
+
+  // CAS: only claim if ready + unsynced + no duplicate risk + revision matches
+  const result = db.run(
+    `UPDATE drafts SET
+      sync_state = 'pending_sync',
+      firefly_outbound_payload = ?,
+      firefly_started_at = ?,
+      firefly_external_id = ?,
+      firefly_lease_token = ?,
+      firefly_lease_acquired_at = ?,
+      firefly_lease_expires_at = ?,
+      updated_at = datetime('now')
+    WHERE id = ?
+      AND review_state = 'ready'
+      AND sync_state = 'unsynced'
+      AND duplicate_risk = 0
+      AND revision = ?`,
+    [outboundPayload, now, externalId, leaseToken, now, expiresAt, id, expectedRevision],
+  );
+
+  if ((result.changes ?? 0) === 0) return null;
+  return getDraft(db, id)!;
+}
+
+/**
+ * Atomically acquire an exclusive recovery lease on a pending_sync draft.
+ *
+ * CAS: succeeds when firefly_lease_token IS NULL (no holder) OR
+ * firefly_lease_expires_at < now (expired/stale from crashed process).
+ * Assigns a new random lease token with fresh expiry.
+ *
+ * Returns null if CAS fails (another caller holds a valid lease, or draft not pending).
+ */
+export function acquirePendingSyncRecoveryLease(
+  db: Database,
+  id: number,
+): { outboundPayload: string; externalId: string; leaseToken: string } | null {
+  const newLease = randomUUID();
+  const now = new Date().toISOString();
+  const expiresAt = new Date(Date.now() + LEASE_TTL_MS).toISOString();
+
+  // CAS: acquire when no holder OR lease has expired
+  const result = db.run(
+    `UPDATE drafts SET
+      firefly_lease_token = ?,
+      firefly_lease_acquired_at = ?,
+      firefly_lease_expires_at = ?,
+      updated_at = datetime('now')
+    WHERE id = ?
+      AND sync_state = 'pending_sync'
+      AND (firefly_lease_token IS NULL OR firefly_lease_expires_at < ?)`,
+    [newLease, now, expiresAt, id, now],
+  );
+  if ((result.changes ?? 0) === 0) return null;
+
+  const draft = getDraft(db, id)!;
+  if (!draft.fireflyOutboundPayload || !draft.fireflyExternalId) return null;
+  return {
+    outboundPayload: draft.fireflyOutboundPayload,
+    externalId: draft.fireflyExternalId,
+    leaseToken: newLease,
+  };
+}
+
+/**
+ * Complete a synced draft: set group/journal IDs, synced timestamp, mark synced+approved.
+ * Only succeeds if draft is pending_sync with matching lease token.
+ * Clears the lease token (terminal state — lease no longer needed).
+ * Never downgrades synced state.
+ */
+export function completeDraftSync(
+  db: Database,
+  id: number,
+  groupId: string,
+  journalId: string,
+  leaseToken: string,
+): DraftRecord | null {
+  const now = new Date().toISOString();
+  // P0.8: Canonical output persists group + journal only.
+  // Legacy firefly_transaction_id column is left null/unused.
+  const result = db.run(
+    `UPDATE drafts SET
+      firefly_group_id = ?,
+      firefly_journal_id = ?,
+      firefly_transaction_id = NULL,
+      firefly_synced_at = ?,
+      firefly_outcome = NULL,
+      firefly_error_code = NULL,
+      firefly_error_message = NULL,
+      firefly_lease_token = NULL,
+      firefly_lease_acquired_at = NULL,
+      firefly_lease_expires_at = NULL,
+      sync_state = 'synced',
+      review_state = 'approved',
+      updated_at = datetime('now')
+    WHERE id = ?
+      AND sync_state = 'pending_sync'
+      AND firefly_lease_token = ?`,
+    [groupId, journalId, now, id, leaseToken],
+  );
+  if ((result.changes ?? 0) === 0) return null;
+  return getDraft(db, id)!;
+}
+
+/**
+ * Mark sync as failed with sanitized error info.
+ * For definite rejections (validation 400/422, duplicate, auth/contract/rate limit).
+ * Only succeeds if draft is pending_sync with matching lease token.
+ * Clears the lease token (terminal state).
+ */
+export function failDraftSync(
+  db: Database,
+  id: number,
+  errorCode: string,
+  errorMessage: string,
+  leaseToken: string,
+): DraftRecord | null {
+  const result = db.run(
+    `UPDATE drafts SET
+      firefly_error_code = ?,
+      firefly_error_message = ?,
+      firefly_outcome = NULL,
+      firefly_lease_token = NULL,
+      firefly_lease_acquired_at = NULL,
+      firefly_lease_expires_at = NULL,
+      sync_state = 'sync_failed',
+      updated_at = datetime('now')
+    WHERE id = ?
+      AND sync_state = 'pending_sync'
+      AND firefly_lease_token = ?`,
+    [errorCode, errorMessage, id, leaseToken],
+  );
+  if ((result.changes ?? 0) === 0) return null;
+  return getDraft(db, id)!;
+}
+
+/**
+ * Mark sync as outcome unknown (network/timeout/5xx/malformed).
+ * Draft stays pending_sync for recovery.
+ * Clears the lease token (recovery lease released) while preserving pending state.
+ * Only succeeds if draft is pending_sync with matching lease token.
+ */
+export function markSyncOutcomeUnknown(
+  db: Database,
+  id: number,
+  errorCode: string,
+  errorMessage: string,
+  leaseToken: string,
+): DraftRecord | null {
+  const result = db.run(
+    `UPDATE drafts SET
+      firefly_outcome = 'FIREFLY_OUTCOME_UNKNOWN',
+      firefly_error_code = ?,
+      firefly_error_message = ?,
+      firefly_lease_token = NULL,
+      firefly_lease_acquired_at = NULL,
+      firefly_lease_expires_at = NULL,
+      updated_at = datetime('now')
+    WHERE id = ?
+      AND sync_state = 'pending_sync'
+      AND firefly_lease_token = ?`,
+    [errorCode, errorMessage, id, leaseToken],
+  );
+  if ((result.changes ?? 0) === 0) return null;
+  return getDraft(db, id)!;
+}
+
+// ─── P1.5: sync_failed safe exit ─────────────────────────────
+
+/**
+ * Whether a sync_failed error code is retryable (operational/validation).
+ * Duplicate and ambiguous are non-retryable — user must resolve manually.
+ */
+export function isRetryableSyncFailure(errorCode: string): boolean {
+  return (
+    errorCode === "FIREFLY_VALIDATION_ERROR" ||
+    errorCode === "FIREFLY_AUTH_ERROR" ||
+    errorCode === "FIREFLY_RATE_LIMIT" ||
+    errorCode === "FIREFLY_SERVER_ERROR" ||
+    errorCode === "FIREFLY_NETWORK_ERROR" ||
+    errorCode === "FIREFLY_OUTCOME_UNKNOWN" ||
+    errorCode === "FIREFLY_SEARCH_ERROR" ||
+    errorCode === "FIREFLY_UNKNOWN_ERROR"
+  );
+}
+
+/**
+ * Reset a retryable sync_failed draft back to unsynced + needs_review.
+ * Clears persisted request/error state. Only works for retryable failures.
+ * Non-retryable (duplicate, ambiguous) stay blocked.
+ *
+ * Returns the updated draft if successful, null if not eligible.
+ */
+export function resetSyncFailedDraft(
+  db: Database,
+  id: number,
+): DraftRecord | null {
+  const draft = getDraft(db, id);
+  if (!draft) return null;
+  if (draft.syncState !== "sync_failed") return null;
+  if (!draft.fireflyErrorCode || !isRetryableSyncFailure(draft.fireflyErrorCode)) {
+    return null; // non-retryable
+  }
+  db.run(
+    `UPDATE drafts SET
+      sync_state = 'unsynced',
+      review_state = 'needs_review',
+      firefly_outbound_payload = NULL,
+      firefly_started_at = NULL,
+      firefly_error_code = NULL,
+      firefly_error_message = NULL,
+      firefly_outcome = NULL,
+      firefly_lease_token = NULL,
+      firefly_lease_acquired_at = NULL,
+      firefly_lease_expires_at = NULL,
+      firefly_external_id = NULL,
+      revision = revision + 1,
+      updated_at = datetime('now')
+    WHERE id = ?`,
+    [id],
+  );
+  return getDraft(db, id)!;
+}
+
+// ─── Helpers ──────────────────────────────────────────────────
 
 function mapRow(row: Record<string, unknown>): DraftRecord {
   return {
@@ -308,5 +711,22 @@ function mapRow(row: Record<string, unknown>): DraftRecord {
     userEditedAt: (row.user_edited_at as string) ?? null,
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
+    // Firefly link fields
+    fireflyTransactionId: (row.firefly_transaction_id as string) ?? null,
+    fireflyJournalId: (row.firefly_journal_id as string) ?? null,
+    fireflyGroupId: (row.firefly_group_id as string) ?? null,
+    fireflySyncedAt: (row.firefly_synced_at as string) ?? null,
+    fireflyExternalId: (row.firefly_external_id as string) ?? null,
+    // Outbound persistence fields
+    fireflyOutboundPayload: (row.firefly_outbound_payload as string) ?? null,
+    fireflyStartedAt: (row.firefly_started_at as string) ?? null,
+    fireflyErrorCode: (row.firefly_error_code as string) ?? null,
+    fireflyErrorMessage: (row.firefly_error_message as string) ?? null,
+    fireflyOutcome: (row.firefly_outcome as string) ?? null,
+    // Lease + revision
+    fireflyLeaseToken: (row.firefly_lease_token as string) ?? null,
+    fireflyLeaseAcquiredAt: (row.firefly_lease_acquired_at as string) ?? null,
+    fireflyLeaseExpiresAt: (row.firefly_lease_expires_at as string) ?? null,
+    revision: (row.revision as number) ?? 0,
   };
 }

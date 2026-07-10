@@ -49,6 +49,10 @@ describe("GET /drafts/:id", () => {
     parsedCurrency?: string | null;
     currency?: string | null;
     sourceAccountHints?: string | null;
+    fireflyGroupId?: string | null;
+    fireflyJournalId?: string | null;
+    fireflyExternalId?: string | null;
+    fireflyErrorMessage?: string | null;
   } = {}): number {
     const db = openDatabase(tmpDbPath);
     try {
@@ -82,6 +86,30 @@ describe("GET /drafts/:id", () => {
         hasUncertainty: ("hasUncertainty" in overrides ? overrides.hasUncertainty : false) as boolean,
         userEditedAt: null,
       });
+
+      if (
+        "fireflyGroupId" in overrides ||
+        "fireflyJournalId" in overrides ||
+        "fireflyExternalId" in overrides ||
+        "fireflyErrorMessage" in overrides
+      ) {
+        db.run(
+          `UPDATE drafts SET
+            firefly_group_id = ?,
+            firefly_journal_id = ?,
+            firefly_external_id = ?,
+            firefly_error_message = ?
+          WHERE id = ?`,
+          [
+            overrides.fireflyGroupId ?? null,
+            overrides.fireflyJournalId ?? null,
+            overrides.fireflyExternalId ?? null,
+            overrides.fireflyErrorMessage ?? null,
+            draft.id,
+          ],
+        );
+      }
+
       return draft.id;
     } finally {
       db.close();
@@ -356,5 +384,59 @@ describe("GET /drafts/:id", () => {
     expect(body).toMatch(/if \(!res\.ok\)/);
     expect(body).toMatch(/showJsError/);
     expect(body).toMatch(/jsErrorBanner/);
+  });
+
+  it("locks the form and shows recovery UI when syncState is pending_sync", async () => {
+    const draftId = seedDraft({
+      reviewState: "ready",
+      syncState: "pending_sync",
+      fireflyExternalId: "finance-assistant:test:draft:1",
+    });
+    const app = createApp(config);
+    const res = await app.handle(new Request(`http://test/drafts/${draftId}`));
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toMatch(/sync result unknown/i);
+    expect(body).toMatch(/Recover sync/i);
+    expect(body).toMatch(/Recover this sync/i);
+    expect(body).toMatch(/search Firefly/i);
+    expect(body).toMatch(/identical withdrawal/i);
+    expect(body).toContain("finance-assistant:test:draft:1");
+    expect(body).not.toMatch(/Review and sync/i);
+    expect(body).not.toMatch(/Mark ready/i);
+    expect(body).toMatch(/id=["']date["'][^>]*readonly/);
+    expect(body).toMatch(/id=["']currency["'][^>]*disabled/);
+  });
+
+  it("shows persisted Firefly references when synced", async () => {
+    const draftId = seedDraft({
+      syncState: "synced",
+      fireflyGroupId: "grp-123",
+      fireflyJournalId: "jrnl-456",
+      fireflyExternalId: "ext-789",
+    });
+    const app = createApp(config);
+    const res = await app.handle(new Request(`http://test/drafts/${draftId}`));
+    const body = await res.text();
+    expect(body).toContain("grp-123");
+    expect(body).toContain("jrnl-456");
+    expect(body).toContain("ext-789");
+    expect(body).toMatch(/read-only/i);
+  });
+
+  it("shows server error for sync_failed without retry action", async () => {
+    const draftId = seedDraft({
+      reviewState: "ready",
+      syncState: "sync_failed",
+      fireflyErrorMessage: "Firefly withdrawal failed: 401 Unauthorized",
+    });
+    const app = createApp(config);
+    const res = await app.handle(new Request(`http://test/drafts/${draftId}`));
+    const body = await res.text();
+    expect(body).toMatch(/Sync failed/i);
+    expect(body).toContain("Firefly withdrawal failed: 401 Unauthorized");
+    expect(body).not.toMatch(/Recover sync/i);
+    expect(body).not.toMatch(/Review and sync/i);
+    expect(body).not.toMatch(/Retry/i);
   });
 });
