@@ -53,6 +53,13 @@ export function renderDraftDetailPage(props: RenderProps): string {
   const hasValidFieldsForResolve =
     hasValidNonSourceFields && !!draft.sourceAccountId;
 
+  const markReadyHelp =
+    !hasValidFieldsForResolve && !draft.duplicateRisk && !draft.hasUncertainty
+      ? hasValidNonSourceFields
+        ? "Select a source account to enable Mark ready."
+        : "Fill all required fields to enable Mark ready."
+      : null;
+
   const isCurrencyDefaulted =
     draft.hasUncertainty &&
     draft.parsedCurrency !== draft.currency;
@@ -278,7 +285,7 @@ export function renderDraftDetailPage(props: RenderProps): string {
         ${draft.hasUncertainty ? `<button type="button" id="resolveUncertaintyBtn" class="btn btn-secondary" onclick="resolveUncertainty()" ${!hasValidFieldsForResolve ? "disabled" : ""}>Confirm reviewed fields</button>` : ""}
         <button type="button" id="markReadyBtn" class="btn btn-primary" onclick="markReady()" ${draft.duplicateRisk || draft.hasUncertainty || !hasValidFieldsForResolve ? "disabled" : "disabled"}>Mark ready</button>
       </div>
-      ${!hasValidFieldsForResolve && !draft.duplicateRisk && !draft.hasUncertainty ? '<div class="help-text">Fill all required fields to enable Mark ready.</div>' : ""}
+      ${markReadyHelp ? `<div id="markReadyHelp" class="help-text">${markReadyHelp}</div>` : ""}
       ` : isSynced ? `
       <div class="banner banner-success" role="status">
         This draft is synced and read-only.
@@ -512,6 +519,8 @@ export function renderDraftDetailPage(props: RenderProps): string {
       const select = document.getElementById('source_account_id');
       const button = document.getElementById('markReadyBtn');
       if (button && select) button.disabled = !canMarkReadyWithoutSourceAccount || !select.value;
+      const help = document.getElementById('markReadyHelp');
+      if (help && select && canMarkReadyWithoutSourceAccount) help.style.display = select.value ? 'none' : '';
       const resolveButton = document.getElementById('resolveUncertaintyBtn');
       if (resolveButton && select) resolveButton.disabled = !canResolveWithoutSourceAccount || !select.value;
     }

@@ -253,6 +253,8 @@ describe("GET /drafts/:id", () => {
     const body = await res.text();
     expect(body).toContain("const canMarkReadyWithoutSourceAccount = true");
     expect(body).toContain("updateMarkReadyAvailability");
+    expect(body).toContain('id="markReadyHelp"');
+    expect(body).toContain("Select a source account to enable Mark ready.");
   });
 
   it("category is optional (includes empty option)", async () => {
