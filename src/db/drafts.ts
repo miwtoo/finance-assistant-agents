@@ -26,6 +26,7 @@ export interface DraftRecord {
   sourceIdentifier: string | null;
   sourceAccountHints: string | null;
   sourceAccountName: string | null;
+  sourceAccountId: string | null;
   category: string | null;
   reviewState: string;
   syncState: string;
@@ -88,6 +89,7 @@ export interface DraftInput {
   sourceIdentifier: string | null;
   sourceAccountHints: string | null;
   sourceAccountName: string | null;
+  sourceAccountId: string | null;
   category: string | null;
   reviewState: ReviewState;
   syncState: SyncState;
@@ -168,6 +170,7 @@ export function initDraftsTable(db: Database): void {
       source_identifier TEXT,
       source_account_hints TEXT,
       source_account_name TEXT,
+      source_account_id TEXT,
       category TEXT,
       review_state TEXT NOT NULL DEFAULT 'parsed',
       sync_state TEXT NOT NULL DEFAULT 'unsynced',
@@ -195,6 +198,7 @@ export function initDraftsTable(db: Database): void {
     ["firefly_lease_token", "TEXT"],
     ["firefly_lease_acquired_at", "TEXT"],
     ["firefly_lease_expires_at", "TEXT"],
+    ["source_account_id", "TEXT"],
     ["revision", "INTEGER NOT NULL DEFAULT 0"],
   ];
   for (const [col, type] of migrations) {
@@ -229,10 +233,11 @@ export function insertDraft(db: Database, input: DraftInput): DraftRecord {
       (slip_id, source_path, content_hash, date, amount, currency,
        parsed_currency, merchant, parsed_merchant, parsed_category,
        source_identifier, source_account_hints, source_account_name,
+       source_account_id,
        category, review_state, sync_state, duplicate_risk, has_uncertainty,
        user_edited_at,
        created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
     [
       input.slipId,
       input.sourcePath,
@@ -247,6 +252,7 @@ export function insertDraft(db: Database, input: DraftInput): DraftRecord {
       input.sourceIdentifier,
       input.sourceAccountHints,
       input.sourceAccountName,
+      input.sourceAccountId ?? null,
       input.category,
       input.reviewState,
       input.syncState,
@@ -271,10 +277,11 @@ export function upsertDraft(db: Database, input: DraftInput): DraftRecord {
       (slip_id, source_path, content_hash, date, amount, currency,
        parsed_currency, merchant, parsed_merchant, parsed_category,
        source_identifier, source_account_hints, source_account_name,
+       source_account_id,
        category, review_state, sync_state, duplicate_risk, has_uncertainty,
        user_edited_at,
        created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
      ON CONFLICT(slip_id) DO UPDATE SET
        source_path = excluded.source_path,
        content_hash = excluded.content_hash,
@@ -288,6 +295,7 @@ export function upsertDraft(db: Database, input: DraftInput): DraftRecord {
        source_identifier = excluded.source_identifier,
        source_account_hints = excluded.source_account_hints,
        source_account_name = excluded.source_account_name,
+       source_account_id = excluded.source_account_id,
        category = excluded.category,
        review_state = excluded.review_state,
        sync_state = excluded.sync_state,
@@ -309,6 +317,7 @@ export function upsertDraft(db: Database, input: DraftInput): DraftRecord {
       input.sourceIdentifier,
       input.sourceAccountHints,
       input.sourceAccountName,
+      input.sourceAccountId ?? null,
       input.category,
       input.reviewState,
       input.syncState,
@@ -382,6 +391,7 @@ export function updateDraftField(
     "source_identifier",
     "source_account_hints",
     "source_account_name",
+    "source_account_id",
     "category",
     "review_state",
     "sync_state",
@@ -395,6 +405,7 @@ export function updateDraftField(
     sourceIdentifier: "source_identifier",
     sourceAccountHints: "source_account_hints",
     sourceAccountName: "source_account_name",
+    sourceAccountId: "source_account_id",
     reviewState: "review_state",
     syncState: "sync_state",
     duplicateRisk: "duplicate_risk",
@@ -413,6 +424,23 @@ export function updateDraftField(
   const row = db
     .query("SELECT * FROM drafts WHERE id = ?")
     .get(id) as Record<string, unknown>;
+  return mapRow(row);
+}
+
+/** Persist a selected Firefly asset account atomically. */
+export function updateDraftSourceAccount(
+  db: Database,
+  id: number,
+  account: { id: string; name: string },
+): DraftRecord {
+  db.run(
+    `UPDATE drafts
+     SET source_account_id = ?, source_account_name = ?, user_edited_at = ?,
+         revision = revision + 1, updated_at = datetime('now')
+     WHERE id = ?`,
+    [account.id, account.name, new Date().toISOString(), id],
+  );
+  const row = db.query("SELECT * FROM drafts WHERE id = ?").get(id) as Record<string, unknown>;
   return mapRow(row);
 }
 
@@ -703,6 +731,7 @@ function mapRow(row: Record<string, unknown>): DraftRecord {
     sourceIdentifier: (row.source_identifier as string) ?? null,
     sourceAccountHints: (row.source_account_hints as string) ?? null,
     sourceAccountName: (row.source_account_name as string) ?? null,
+    sourceAccountId: (row.source_account_id as string) ?? null,
     category: (row.category as string) ?? null,
     reviewState: row.review_state as string,
     syncState: row.sync_state as string,

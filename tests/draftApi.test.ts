@@ -68,6 +68,7 @@ describe("Draft API routes", () => {
         sourceIdentifier: null,
         sourceAccountHints: null,
         sourceAccountName: "My Bank",
+        sourceAccountId: "10",
         category: null,
         reviewState: (overrides.reviewState ?? "parsed") as any,
         syncState: "unsynced" as any,
@@ -233,6 +234,19 @@ describe("Draft API routes", () => {
     expect(res.status).toBe(400);
   });
 
+  it("rejects arbitrary source-account name updates", async () => {
+    const { draftId } = seedDraft(tmpDbPath);
+    const app = createApp(config);
+    const res = await app.handle(
+      new Request(`http://test/drafts/${draftId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ field: "source_account_name", value: "Invented account" }),
+      }),
+    );
+    expect(res.status).toBe(400);
+  });
+
   it("returns 404 for non-existent draft", async () => {
     const app = createApp(config);
     const res = await app.handle(
@@ -390,6 +404,7 @@ describe("Draft API routes", () => {
         sourceIdentifier: null,
         sourceAccountHints: null,
         sourceAccountName: "My Bank",
+        sourceAccountId: "10",
         category: null,
         reviewState: "parsed" as any,
         syncState: "unsynced" as any,
@@ -517,6 +532,7 @@ describe("Draft API routes", () => {
         sourceIdentifier: null,
         sourceAccountHints: null,
         sourceAccountName: "My Bank",
+        sourceAccountId: "10",
         category: null,
         reviewState: "needs_review" as any,
         syncState: "unsynced" as any,
@@ -858,10 +874,10 @@ describe("Draft API routes", () => {
     });
   }
 
-  /** Seed a ready draft with sourceAccountName for sync tests. */
+  /** Seed a ready draft with a Firefly asset-account ID for sync tests. */
   function seedReadyDraft(
     dbPath: string,
-    overrides: { sourceAccountName?: string; syncState?: string; reviewState?: string; duplicateRisk?: boolean } = {},
+    overrides: { sourceAccountName?: string; sourceAccountId?: string; syncState?: string; reviewState?: string; duplicateRisk?: boolean } = {},
   ): { slipId: number; draftId: number } {
     const db = openDatabase(dbPath);
     try {
@@ -887,6 +903,7 @@ describe("Draft API routes", () => {
         sourceIdentifier: null,
         sourceAccountHints: null,
         sourceAccountName: overrides.sourceAccountName ?? "My Bank",
+        sourceAccountId: overrides.sourceAccountId ?? "10",
         category: null,
         reviewState: (overrides.reviewState ?? "ready") as any,
         syncState: (overrides.syncState ?? "unsynced") as any,
@@ -899,6 +916,131 @@ describe("Draft API routes", () => {
       db.close();
     }
   }
+
+  // ─── Source-account selection ───────────────────────────────
+
+  it("returns Firefly asset accounts for a draft", async () => {
+    const { draftId } = seedDraft(tmpDbPath);
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = mockFetch({
+      "accounts?type=asset": { status: 200, body: assetAccountsPayload },
+    }) as any;
+    try {
+      const app = createApp(config);
+      const res = await app.handle(new Request(`http://test/drafts/${draftId}/source-accounts`));
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.accounts).toEqual([
+        { id: "10", name: "My Bank", type: "asset" },
+        { id: "11", name: "Savings", type: "asset" },
+      ]);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("returns an empty source-account list when Firefly has no asset accounts", async () => {
+    const { draftId } = seedDraft(tmpDbPath);
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = mockFetch({
+      "accounts?type=asset": { status: 200, body: { data: [] } },
+    }) as any;
+    try {
+      const app = createApp(config);
+      const res = await app.handle(new Request(`http://test/drafts/${draftId}/source-accounts`));
+      expect(res.status).toBe(200);
+      expect((await res.json()).accounts).toEqual([]);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("reports a Firefly account-load failure without exposing upstream details", async () => {
+    const { draftId } = seedDraft(tmpDbPath);
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = mockFetch({
+      "accounts?type=asset": { status: 401, body: { message: "sensitive upstream detail" } },
+    }) as any;
+    try {
+      const app = createApp(config);
+      const res = await app.handle(new Request(`http://test/drafts/${draftId}/source-accounts`));
+      expect(res.status).toBe(502);
+      const body = await res.json();
+      expect(body.message).toBe("Failed to fetch Firefly asset accounts");
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("persists a selected Firefly source-account ID and display name", async () => {
+    const { draftId } = seedDraft(tmpDbPath);
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = mockFetch({
+      "accounts?type=asset": { status: 200, body: assetAccountsPayload },
+    }) as any;
+    try {
+      const app = createApp(config);
+      const res = await app.handle(new Request(`http://test/drafts/${draftId}/source-account`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sourceAccountId: "11" }),
+      }));
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.draft).toEqual({
+        id: draftId,
+        sourceAccountId: "11",
+        sourceAccountName: "Savings",
+        reviewState: "needs_review",
+      });
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("allows a selected source account to satisfy the ready gate", async () => {
+    const { draftId } = seedDraft(tmpDbPath);
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = mockFetch({
+      "accounts?type=asset": { status: 200, body: assetAccountsPayload },
+    }) as any;
+    try {
+      const app = createApp(config);
+      const select = await app.handle(new Request(`http://test/drafts/${draftId}/source-account`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sourceAccountId: "11" }),
+      }));
+      expect(select.status).toBe(200);
+
+      const ready = await app.handle(new Request(`http://test/drafts/${draftId}/mark-ready`, { method: "POST" }));
+      expect(ready.status).toBe(200);
+      expect((await ready.json()).draft.reviewState).toBe("ready");
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("rejects a source-account ID that Firefly does not currently expose", async () => {
+    const { draftId } = seedDraft(tmpDbPath);
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = mockFetch({
+      "accounts?type=asset": { status: 200, body: assetAccountsPayload },
+    }) as any;
+    try {
+      const app = createApp(config);
+      const res = await app.handle(new Request(`http://test/drafts/${draftId}/source-account`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sourceAccountId: "not-an-account" }),
+      }));
+      expect(res.status).toBe(422);
+      const body = await res.json();
+      expect(body.message).toContain("no longer exists");
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
 
   // ─── GET /drafts/:id/sync-options ─────────────────────────
 
@@ -963,8 +1105,8 @@ describe("Draft API routes", () => {
     expect(body.message).toContain("duplicate risk");
   });
 
-  it("returns 422 when source account name has no match in Firefly", async () => {
-    const { draftId } = seedReadyDraft(tmpDbPath, { sourceAccountName: "Nonexistent Bank" });
+  it("returns 422 when the selected source account no longer exists in Firefly", async () => {
+    const { draftId } = seedReadyDraft(tmpDbPath, { sourceAccountId: "missing" });
     const origFetch = globalThis.fetch;
     globalThis.fetch = mockFetch({
       "accounts?type=asset": { status: 200, body: assetAccountsPayload },
@@ -976,14 +1118,14 @@ describe("Draft API routes", () => {
       expect(res.status).toBe(422);
       const body = await res.json();
       expect(body.ok).toBe(false);
-      expect(body.message).toContain("No asset account exactly matching");
+      expect(body.message).toContain("no longer exists");
     } finally {
       globalThis.fetch = origFetch;
     }
   });
 
-  it("returns 422 when multiple asset accounts match (ambiguous)", async () => {
-    const { draftId } = seedReadyDraft(tmpDbPath, { sourceAccountName: "My Bank" });
+  it("uses the selected ID even when multiple Firefly accounts share the same name", async () => {
+    const { draftId } = seedReadyDraft(tmpDbPath, { sourceAccountId: "12" });
     const origFetch = globalThis.fetch;
     globalThis.fetch = mockFetch({
       "accounts?type=asset": {
@@ -1000,10 +1142,10 @@ describe("Draft API routes", () => {
     try {
       const app = createApp(config);
       const res = await app.handle(new Request(`http://test/drafts/${draftId}/sync-options`));
-      expect(res.status).toBe(422);
+      expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body.ok).toBe(false);
-      expect(body.message).toContain("Ambiguous");
+      expect(body.ok).toBe(true);
+      expect(body.sourceAccount).toEqual({ id: "12", name: "My Bank" });
     } finally {
       globalThis.fetch = origFetch;
     }
@@ -1378,8 +1520,8 @@ describe("Draft API routes", () => {
     expect(body.message).toContain("not unsynced");
   });
 
-  it("rejects sync when source account has no match in Firefly", async () => {
-    const { draftId } = seedReadyDraft(tmpDbPath, { sourceAccountName: "Ghost Bank" });
+  it("rejects sync when the selected source account no longer exists in Firefly", async () => {
+    const { draftId } = seedReadyDraft(tmpDbPath, { sourceAccountId: "missing" });
     const origFetch = globalThis.fetch;
     globalThis.fetch = mockFetch({
       "accounts?type=asset": { status: 200, body: assetAccountsPayload },
@@ -1396,7 +1538,7 @@ describe("Draft API routes", () => {
       );
       expect(res.status).toBe(422);
       const body = await res.json();
-      expect(body.message).toContain("No asset account exactly matching");
+      expect(body.message).toContain("no longer exists");
     } finally {
       globalThis.fetch = origFetch;
     }

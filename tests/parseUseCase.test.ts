@@ -241,6 +241,7 @@ describe("parseSlipToDraftAsync — use-case integration", () => {
     expect(draft!.parsedCategory).toBeNull();
 
     updateDraftField(db, draft!.id, "source_account_name", "My Bank Account");
+    updateDraftField(db, draft!.id, "source_account_id", "asset-1");
     expect(markDraftReady(db, draft!.id).success).toBe(true);
   });
 

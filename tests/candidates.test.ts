@@ -142,6 +142,7 @@ describe("GET /candidates", () => {
         GEMINI_API_KEY: "test",
         SLIPS_RAW_DIR: tmpSlipsDir,
         DB_PATH: securedDb,
+        CF_ACCESS_DEV_BYPASS: undefined,
       },
       async (app) => {
         const res = await app.handle(

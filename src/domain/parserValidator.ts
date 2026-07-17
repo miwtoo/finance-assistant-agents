@@ -334,6 +334,7 @@ export function checkReadiness(draft: {
   currency: string | null;
   merchant: string | null;
   sourceAccountName: string | null;
+  sourceAccountId: string | null;
   duplicateRisk: boolean;
   hasUncertainty: boolean;
 }): ReadinessResult {
@@ -366,7 +367,7 @@ export function checkReadiness(draft: {
   }
 
   // Source account
-  if (!draft.sourceAccountName) {
+  if (!draft.sourceAccountId) {
     errors.push("Source account is required");
   }
 

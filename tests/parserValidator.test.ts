@@ -401,7 +401,7 @@ describe("checkReadiness", () => {
   it("returns ready=true when all conditions met", () => {
     const result = checkReadiness({
       date: "2025-06-22", amount: "123.45", currency: "THB",
-      merchant: "Shop", sourceAccountName: "My Bank",
+      merchant: "Shop", sourceAccountName: "My Bank", sourceAccountId: "asset-1",
       duplicateRisk: false, hasUncertainty: false,
     });
     expect(result.ready).toBe(true);
@@ -411,7 +411,7 @@ describe("checkReadiness", () => {
   it("returns ready=false when amount is missing", () => {
     const result = checkReadiness({
       date: "2025-06-22", amount: null, currency: "THB",
-      merchant: "Shop", sourceAccountName: "My Bank",
+      merchant: "Shop", sourceAccountName: "My Bank", sourceAccountId: "asset-1",
       duplicateRisk: false, hasUncertainty: false,
     });
     expect(result.ready).toBe(false);
@@ -421,7 +421,7 @@ describe("checkReadiness", () => {
   it("returns ready=false when amount has invalid format", () => {
     const result = checkReadiness({
       date: "2025-06-22", amount: "abc", currency: "THB",
-      merchant: "Shop", sourceAccountName: "My Bank",
+      merchant: "Shop", sourceAccountName: "My Bank", sourceAccountId: "asset-1",
       duplicateRisk: false, hasUncertainty: false,
     });
     expect(result.ready).toBe(false);
@@ -431,7 +431,7 @@ describe("checkReadiness", () => {
   it("returns ready=false when date has invalid format", () => {
     const result = checkReadiness({
       date: "not-a-date", amount: "100.00", currency: "THB",
-      merchant: "Shop", sourceAccountName: "My Bank",
+      merchant: "Shop", sourceAccountName: "My Bank", sourceAccountId: "asset-1",
       duplicateRisk: false, hasUncertainty: false,
     });
     expect(result.ready).toBe(false);
@@ -441,7 +441,7 @@ describe("checkReadiness", () => {
   it("returns ready=false when currency is UNKNOWN", () => {
     const result = checkReadiness({
       date: "2025-06-22", amount: "100.00", currency: "UNKNOWN",
-      merchant: "Shop", sourceAccountName: "My Bank",
+      merchant: "Shop", sourceAccountName: "My Bank", sourceAccountId: "asset-1",
       duplicateRisk: false, hasUncertainty: false,
     });
     expect(result.ready).toBe(false);
@@ -453,17 +453,17 @@ describe("checkReadiness", () => {
   it("returns ready=false when currency is unrecognized like 'XYZ'", () => {
     const result = checkReadiness({
       date: "2025-06-22", amount: "100.00", currency: "XYZ",
-      merchant: "Shop", sourceAccountName: "My Bank",
+      merchant: "Shop", sourceAccountName: "My Bank", sourceAccountId: "asset-1",
       duplicateRisk: false, hasUncertainty: false,
     });
     expect(result.ready).toBe(false);
     expect(result.errors.some((e) => e.includes("XYZ"))).toBe(true);
   });
 
-  it("returns ready=false when sourceAccountName is not set", () => {
+  it("returns ready=false when sourceAccountId is not set", () => {
     const result = checkReadiness({
       date: "2025-06-22", amount: "100.00", currency: "THB",
-      merchant: "Shop", sourceAccountName: null,
+      merchant: "Shop", sourceAccountName: "My Bank", sourceAccountId: null,
       duplicateRisk: false, hasUncertainty: false,
     });
     expect(result.ready).toBe(false);
@@ -473,7 +473,7 @@ describe("checkReadiness", () => {
   it("returns ready=false when duplicateRisk is true", () => {
     const result = checkReadiness({
       date: "2025-06-22", amount: "100.00", currency: "THB",
-      merchant: "Shop", sourceAccountName: "My Bank",
+      merchant: "Shop", sourceAccountName: "My Bank", sourceAccountId: "asset-1",
       duplicateRisk: true, hasUncertainty: false,
     });
     expect(result.ready).toBe(false);
@@ -483,7 +483,7 @@ describe("checkReadiness", () => {
   it("returns ready=false when hasUncertainty is true", () => {
     const result = checkReadiness({
       date: "2025-06-22", amount: "100.00", currency: "THB",
-      merchant: "Shop", sourceAccountName: "My Bank",
+      merchant: "Shop", sourceAccountName: "My Bank", sourceAccountId: "asset-1",
       duplicateRisk: false, hasUncertainty: true,
     });
     expect(result.ready).toBe(false);

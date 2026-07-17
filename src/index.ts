@@ -15,6 +15,8 @@ import {
   syncOptionsHandler,
   syncDraftHandler,
   syncRecoverHandler,
+  getDraftSourceAccountsHandler,
+  selectDraftSourceAccountHandler,
 } from "./web/routes/draftApi";
 import { draftDetailHandler } from "./web/routes/draftDetail";
 
@@ -60,6 +62,8 @@ export function createApp(config = loadConfig(), opts?: CreateAppOptions) {
   app.post("/drafts/:id/resolve-uncertainty", resolveUncertaintyHandler(config));
 
   // Sync endpoints
+  app.get("/drafts/:id/source-accounts", getDraftSourceAccountsHandler(config));
+  app.post("/drafts/:id/source-account", selectDraftSourceAccountHandler(config));
   app.get("/drafts/:id/sync-options", syncOptionsHandler(config));
   app.post("/drafts/:id/sync/recover", syncRecoverHandler(config));
   app.post("/drafts/:id/sync", syncDraftHandler(config));

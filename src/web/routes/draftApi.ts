@@ -8,6 +8,7 @@ import {
   getDraft,
   getDraftBySlipId,
   updateDraftField,
+  updateDraftSourceAccount,
   getOrCreateInstallationId,
   buildExternalId,
   claimDraftForSync,
@@ -36,7 +37,6 @@ const USER_EDITABLE_FIELDS = new Set([
   "amount",
   "currency",
   "merchant",
-  "source_account_name",
   "category",
 ]);
 
@@ -158,6 +158,7 @@ export function createManualDraftHandler(config: AppConfig) {
         sourceIdentifier: null,
         sourceAccountHints: null,
         sourceAccountName: null,
+        sourceAccountId: null,
         category: null,
         reviewState: ReviewState.NeedsReview,
         syncState: SyncState.Unsynced,
@@ -309,7 +310,7 @@ export function saveDraftFieldHandler(config: AppConfig) {
  *
  * Explicit endpoint to clear uncertainty after user review.
  * Validates all readiness-relevant fields (amount, date, currency, merchant,
- * sourceAccountName) are present and valid. Clears has_uncertainty if
+ * sourceAccountId) are present and valid. Clears has_uncertainty if
  * everything checks out (wrapped in a transaction with user_edited_at set).
  * Returns validation errors if not.
  *
@@ -354,7 +355,7 @@ export function resolveUncertaintyHandler(config: AppConfig) {
       if (!draft.currency || !isValidCurrency(draft.currency)) {
         errors.push("Currency must be a recognized code");
       }
-      if (!draft.sourceAccountName) {
+      if (!draft.sourceAccountId) {
         errors.push("Source account is required");
       }
 
@@ -479,7 +480,7 @@ function validateForSync(draft: {
   amount: string | null;
   currency: string | null;
   merchant: string | null;
-  sourceAccountName: string | null;
+  sourceAccountId: string | null;
   category: string | null;
 }): { ok: true; normalized: { date: string; amount: string; currency: string; merchant: string } } | { ok: false; status: number; errors: string[] } {
   const errors: string[] = [];
@@ -496,8 +497,8 @@ function validateForSync(draft: {
   }
 
   // Source account required
-  if (!draft.sourceAccountName || !draft.sourceAccountName.trim()) {
-    errors.push("Source account name is required for sync");
+  if (!draft.sourceAccountId || !draft.sourceAccountId.trim()) {
+    errors.push("Source account is required for sync");
   }
 
   // Amount: must be present, valid format, positive, finite
@@ -610,7 +611,7 @@ function mapFireflyErrorToSyncResult(
  */
 async function validateSyncAccounts(
   config: AppConfig,
-  sourceAccountName: string,
+  sourceAccountId: string,
   destinationAccountId: string,
 ): Promise<
   | { ok: true; sourceAccountId: string }
@@ -634,23 +635,13 @@ async function validateSyncAccounts(
     return { ok: false, status: 502, message: "Failed to fetch Firefly expense accounts" };
   }
 
-  const sourceName = sourceAccountName.trim();
-  const matchedAssets = assetRes.data.filter((a) => a.name.trim() === sourceName);
-
-  if (matchedAssets.length === 0) {
+  const sourceAccount = assetRes.data.find((account) => account.id === sourceAccountId);
+  if (!sourceAccount) {
     return {
       ok: false,
       status: 422,
-      message: `No asset account exactly matching "${sourceName}" found in Firefly`,
-      errors: [`No exact match for source account "${sourceName}"`],
-    };
-  }
-  if (matchedAssets.length > 1) {
-    return {
-      ok: false,
-      status: 422,
-      message: `Ambiguous asset account match for "${sourceName}" (${matchedAssets.length} matches)`,
-      errors: [`Multiple asset accounts match "${sourceName}": ${matchedAssets.map((a) => a.name).join(", ")}`],
+      message: "Selected source account no longer exists in Firefly",
+      errors: ["Select a current Firefly asset account before syncing"],
     };
   }
 
@@ -664,7 +655,7 @@ async function validateSyncAccounts(
     };
   }
 
-  return { ok: true, sourceAccountId: matchedAssets[0].id };
+  return { ok: true, sourceAccountId: sourceAccount.id };
 }
 
 // ─── GET /drafts/:id/sync-options ─────────────────────────────
@@ -672,8 +663,8 @@ async function validateSyncAccounts(
 /**
  * GET /drafts/:id/sync-options
  *
- * Load a ready/eligible draft, exact-match its source account name against
- * Firefly asset accounts, return source account + expense account choices.
+ * Load a ready/eligible draft, validate its selected source account ID against
+ * Firefly asset accounts, then return that account and expense-account choices.
  *
  * Response: { sourceAccount: {id,name}, destinationAccounts: [{id,name}] }
  */
@@ -721,12 +712,12 @@ export function syncOptionsHandler(config: AppConfig) {
         );
       }
 
-      if (!draft.sourceAccountName) {
+      if (!draft.sourceAccountId) {
         return json(
           {
             ok: false,
-            message: "Draft has no source account name set",
-            errors: ["sourceAccountName is required"],
+            message: "Draft has no selected source account",
+            errors: ["sourceAccountId is required"],
           },
           422,
         );
@@ -757,31 +748,13 @@ export function syncOptionsHandler(config: AppConfig) {
         );
       }
 
-      const sourceName = draft.sourceAccountName.trim();
-
-      // Exact-match source account against Firefly asset accounts
-      const matchedAsset = assetRes.data.filter(
-        (a) => a.name.trim() === sourceName,
-      );
-
-      if (matchedAsset.length === 0) {
+      const selectedAsset = assetRes.data.find((account) => account.id === draft.sourceAccountId);
+      if (!selectedAsset) {
         return json(
           {
             ok: false,
-            message: `No asset account exactly matching "${sourceName}" found in Firefly`,
-            errors: [`No exact match for source account "${sourceName}"`],
-          },
-          422,
-        );
-      }
-      if (matchedAsset.length > 1) {
-        return json(
-          {
-            ok: false,
-            message: `Ambiguous asset account match for "${sourceName}" (${matchedAsset.length} matches)`,
-            errors: [
-              `Multiple asset accounts match "${sourceName}": ${matchedAsset.map((a) => a.name).join(", ")}`,
-            ],
+            message: "Selected source account no longer exists in Firefly",
+            errors: ["Select a current Firefly asset account before syncing"],
           },
           422,
         );
@@ -789,7 +762,7 @@ export function syncOptionsHandler(config: AppConfig) {
 
       return json({
         ok: true,
-        sourceAccount: { id: matchedAsset[0].id, name: matchedAsset[0].name },
+        sourceAccount: { id: selectedAsset.id, name: selectedAsset.name },
         destinationAccounts: expenseRes.data.map((a) => ({
           id: a.id,
           name: a.name,
@@ -798,6 +771,132 @@ export function syncOptionsHandler(config: AppConfig) {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       return json({ ok: false, message: "Sync-options failed due to an internal error" }, 500);
+    } finally {
+      db?.close();
+    }
+  };
+}
+
+// ─── GET /drafts/:id/source-accounts ──────────────────────────
+
+/**
+ * GET /drafts/:id/source-accounts
+ *
+ * Fetch Firefly asset accounts for a given draft, returning the full
+ * list of available source accounts. The caller can use this to
+ * populate a source-account picker.
+ *
+ * Response: { accounts: [{ id: string, name: string, type: string }] }
+ */
+export function getDraftSourceAccountsHandler(config: AppConfig) {
+  return async (context: { params: { id: string } }): Promise<Response> => {
+    const draftId = Number.parseInt(context.params.id, 10);
+    if (Number.isNaN(draftId) || draftId <= 0) {
+      return json({ ok: false, message: "Invalid draft ID" }, 400);
+    }
+
+    let db: Database | null = null;
+    try {
+      db = openDatabase(config.dbPath);
+      initDraftsTable(db);
+
+      const draft = getDraft(db, draftId);
+      if (!draft) {
+        return json({ ok: false, message: `Draft #${draftId} not found` }, 404);
+      }
+
+      // Fetch Firefly asset accounts using the established client pattern
+      const fireflyCfg: FireflyClientConfig = {
+        baseUrl: config.fireflyBaseUrl,
+        token: config.fireflyToken,
+      };
+      const client = createFireflyClient(fireflyCfg);
+
+      const assetRes = await client.getAssetAccounts();
+      if (!assetRes.ok) {
+        return json(
+          { ok: false, message: "Failed to fetch Firefly asset accounts" },
+          502,
+        );
+      }
+
+      return json({
+        ok: true,
+        accounts: assetRes.data.map((a) => ({
+          id: a.id,
+          name: a.name,
+          type: a.type,
+        })),
+      });
+    } catch (err) {
+      return json(
+        { ok: false, message: "Failed to fetch source accounts due to an internal error" },
+        500,
+      );
+    } finally {
+      db?.close();
+    }
+  };
+}
+
+// ─── POST /drafts/:id/source-account ───────────────────────────
+
+/**
+ * Select a Firefly asset account for a draft. The ID is validated against
+ * Firefly before the ID and its display name are persisted together.
+ */
+export function selectDraftSourceAccountHandler(config: AppConfig) {
+  return async (context: { params: { id: string }; body: unknown }): Promise<Response> => {
+    const draftId = Number.parseInt(context.params.id, 10);
+    const body = context.body as { sourceAccountId?: unknown } | undefined;
+    const sourceAccountId = body?.sourceAccountId;
+    if (Number.isNaN(draftId) || draftId <= 0) {
+      return json({ ok: false, message: "Invalid draft ID" }, 400);
+    }
+    if (typeof sourceAccountId !== "string" || !sourceAccountId.trim()) {
+      return json({ ok: false, message: "sourceAccountId is required (string)" }, 400);
+    }
+
+    let db: Database | null = null;
+    try {
+      db = openDatabase(config.dbPath);
+      initDraftsTable(db);
+      const draft = getDraft(db, draftId);
+      if (!draft) return json({ ok: false, message: `Draft #${draftId} not found` }, 404);
+      if (draft.syncState === SyncState.PendingSync || draft.syncState === SyncState.Synced) {
+        return json({ ok: false, message: `Cannot edit a ${draft.syncState} draft` }, 409);
+      }
+
+      const client = createFireflyClient({ baseUrl: config.fireflyBaseUrl, token: config.fireflyToken });
+      const accounts = await client.getAssetAccounts();
+      if (!accounts.ok) {
+        return json({ ok: false, message: "Failed to fetch Firefly asset accounts" }, 502);
+      }
+      const selected = accounts.data.find((account) => account.id === sourceAccountId);
+      if (!selected) {
+        return json({ ok: false, message: "Selected source account no longer exists in Firefly" }, 422);
+      }
+
+      const safeDb = db;
+      const updated = safeDb.transaction(() => {
+        const result = updateDraftSourceAccount(safeDb, draftId, selected);
+        if (draft.reviewState === ReviewState.Parsed || draft.reviewState === ReviewState.Ready) {
+          return updateDraftField(safeDb, draftId, "review_state", ReviewState.NeedsReview);
+        }
+        return result;
+      })();
+
+      return json({
+        ok: true,
+        draft: {
+          id: updated.id,
+          sourceAccountId: updated.sourceAccountId,
+          sourceAccountName: updated.sourceAccountName,
+          reviewState: updated.reviewState,
+        },
+      });
+    } catch {
+      return json({ ok: false, message: "Could not save source account" }, 500);
     } finally {
       db?.close();
     }
@@ -885,7 +984,7 @@ export function syncDraftHandler(config: AppConfig) {
       // Validate source/destination against Firefly
       const accountValidation = await validateSyncAccounts(
         config,
-        draft.sourceAccountName!,
+        draft.sourceAccountId!,
         destinationAccountId,
       );
       if (!accountValidation.ok) {

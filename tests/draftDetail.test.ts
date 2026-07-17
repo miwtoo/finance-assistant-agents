@@ -44,6 +44,7 @@ describe("GET /drafts/:id", () => {
     amount?: string | null;
     merchant?: string | null;
     sourceAccountName?: string | null;
+    sourceAccountId?: string | null;
     category?: string | null;
     parsedMerchant?: string | null;
     parsedCurrency?: string | null;
@@ -79,6 +80,7 @@ describe("GET /drafts/:id", () => {
         sourceIdentifier: null,
         sourceAccountHints: ("sourceAccountHints" in overrides ? overrides.sourceAccountHints : null) as string | null,
         sourceAccountName: ("sourceAccountName" in overrides ? overrides.sourceAccountName : "My Bank") as string | null,
+        sourceAccountId: ("sourceAccountId" in overrides ? overrides.sourceAccountId : "asset-1") as string | null,
         category: ("category" in overrides ? overrides.category : null) as string | null,
         reviewState: ("reviewState" in overrides ? overrides.reviewState : "parsed") as any,
         syncState: ("syncState" in overrides ? overrides.syncState : "unsynced") as any,
@@ -148,7 +150,9 @@ describe("GET /drafts/:id", () => {
     expect(body).toContain('id="currency"');
     expect(body).toContain('id="merchant"');
     expect(body).toContain('id="category"');
-    expect(body).toContain('id="source_account_name"');
+    expect(body).toContain('id="source_account_id"');
+    expect(body).not.toContain('id="source_account_name"');
+    expect(body).toContain('/source-accounts');
   });
 
   it("amount input is type text with inputmode decimal", async () => {
@@ -242,6 +246,15 @@ describe("GET /drafts/:id", () => {
     expect(body).toMatch(/disabled/);
   });
 
+  it("allows source-account selection to enable Mark ready when other fields are valid", async () => {
+    const draftId = seedDraft({ sourceAccountId: null });
+    const app = createApp(config);
+    const res = await app.handle(new Request(`http://test/drafts/${draftId}`));
+    const body = await res.text();
+    expect(body).toContain("const canMarkReadyWithoutSourceAccount = true");
+    expect(body).toContain("updateMarkReadyAvailability");
+  });
+
   it("category is optional (includes empty option)", async () => {
     const draftId = seedDraft({ category: null });
     const app = createApp(config);
@@ -299,12 +312,13 @@ describe("GET /drafts/:id", () => {
     expect(body).toMatch(/parseLoading/);
   });
 
-  it("save button uses snake_case field names in JS", async () => {
+  it("saves ordinary draft fields separately from the source-account selector", async () => {
     const draftId = seedDraft();
     const app = createApp(config);
     const res = await app.handle(new Request(`http://test/drafts/${draftId}`));
     const body = await res.text();
-    expect(body).toContain('"source_account_name"');
+    expect(body).not.toContain('"source_account_name"');
+    expect(body).toContain("/source-account");
     expect(body).toContain('"merchant"');
     expect(body).toContain('"date"');
     expect(body).toContain('"amount"');

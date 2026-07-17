@@ -44,6 +44,7 @@ describe("drafts db", () => {
       sourceIdentifier: string | null;
       sourceAccountHints: string | null;
       sourceAccountName: string | null;
+      sourceAccountId: string | null;
       category: string | null;
       reviewState: ReviewState;
       syncState: SyncState;
@@ -67,6 +68,7 @@ describe("drafts db", () => {
       sourceIdentifier: overrides.sourceIdentifier ?? null,
       sourceAccountHints: overrides.sourceAccountHints ?? null,
       sourceAccountName: overrides.sourceAccountName ?? null,
+      sourceAccountId: overrides.sourceAccountId ?? null,
       category: overrides.category ?? null,
       reviewState: overrides.reviewState ?? ReviewState.Parsed,
       syncState: overrides.syncState ?? SyncState.Unsynced,

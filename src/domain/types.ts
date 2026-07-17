@@ -156,6 +156,8 @@ export interface DraftTransaction {
   sourceAccountHints: SourceAccountHint[];
   /** Firefly source asset account name */
   sourceAccountName: string | null;
+  /** Firefly source asset account ID */
+  sourceAccountId: string | null;
   /** Firefly category name */
   category: string | null;
   /** Review state */

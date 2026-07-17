@@ -44,12 +44,14 @@ export function renderDraftDetailPage(props: RenderProps): string {
     ? tryParseHints(draft.sourceAccountHints)
     : [];
 
-  const hasValidFieldsForResolve =
+  const hasValidNonSourceFields =
     !!draft.date &&
     !!draft.amount &&
     !!draft.currency &&
-    !!draft.merchant &&
-    !!draft.sourceAccountName;
+    !!draft.merchant;
+
+  const hasValidFieldsForResolve =
+    hasValidNonSourceFields && !!draft.sourceAccountId;
 
   const isCurrencyDefaulted =
     draft.hasUncertainty &&
@@ -256,22 +258,25 @@ export function renderDraftDetailPage(props: RenderProps): string {
       </div>
 
       <div class="field-group">
-        <label for="source_account_name">Source account</label>
-        <input type="text" id="source_account_name" name="source_account_name" value="${escapeHtml(draft.sourceAccountName ?? "")}" placeholder="e.g. Kasikorn Savings" ${isLocked ? "readonly" : ""}>
+        <label for="source_account_id">Source account</label>
+        <select id="source_account_id" name="source_account_id" data-selected-id="${escapeHtml(draft.sourceAccountId ?? "")}" ${isLocked ? "disabled" : "disabled"}>
+          <option value="">Loading Firefly asset accounts…</option>
+        </select>
+        <div id="sourceAccountStatus" class="help-text" role="status">Loading Firefly asset accounts…</div>
         ${sourceAccountHints.length > 0 ? `
           <div class="hint-list">
             <div class="hint-item">Hints from slip:</div>
             ${sourceAccountHints.map(h => `<div class="hint-item">• ${escapeHtml(h.identifier)} — ${escapeHtml(h.evidence)} (${escapeHtml(h.source)})</div>`).join("")}
           </div>
         ` : ""}
-        <div class="help-text">Must match a Firefly asset account. Not auto-detected from folders.</div>
+        <div class="help-text">Choose an existing Firefly asset account. The account ID is saved, so later renames remain safe.</div>
       </div>
 
       ${!isLocked ? `
       <div class="actions">
         <button type="button" class="btn btn-secondary" onclick="saveDraft()">Save as needs review</button>
-        ${draft.hasUncertainty ? `<button type="button" class="btn btn-secondary" onclick="resolveUncertainty()" ${!hasValidFieldsForResolve ? "disabled" : ""}>Confirm reviewed fields</button>` : ""}
-        <button type="button" class="btn btn-primary" onclick="markReady()" ${draft.duplicateRisk || draft.hasUncertainty || !hasValidFieldsForResolve ? "disabled" : ""}>Mark ready</button>
+        ${draft.hasUncertainty ? `<button type="button" id="resolveUncertaintyBtn" class="btn btn-secondary" onclick="resolveUncertainty()" ${!hasValidFieldsForResolve ? "disabled" : ""}>Confirm reviewed fields</button>` : ""}
+        <button type="button" id="markReadyBtn" class="btn btn-primary" onclick="markReady()" ${draft.duplicateRisk || draft.hasUncertainty || !hasValidFieldsForResolve ? "disabled" : "disabled"}>Mark ready</button>
       </div>
       ${!hasValidFieldsForResolve && !draft.duplicateRisk && !draft.hasUncertainty ? '<div class="help-text">Fill all required fields to enable Mark ready.</div>' : ""}
       ` : isSynced ? `
@@ -298,9 +303,9 @@ export function renderDraftDetailPage(props: RenderProps): string {
         <div class="loading-text" id="syncLoading">Loading sync options…</div>
         <div id="syncOptions" style="display:none;">
           <div class="field-group">
-            <label>Source account (matched)</label>
+            <label>Source account (selected)</label>
             <div class="audit-field" id="syncSourceAccount">—</div>
-            <div class="help-text">Exact-matched Firefly asset account. Sync is blocked if no match is found.</div>
+            <div class="help-text">Selected Firefly asset account. Sync is blocked if the account was deleted.</div>
           </div>
           <div class="field-group">
             <label for="syncDestinationAccount">Destination (expense) account</label>
@@ -375,6 +380,9 @@ export function renderDraftDetailPage(props: RenderProps): string {
     const draftAmount = ${JSON.stringify(draft.amount ?? "")};
     const draftCurrency = ${JSON.stringify(draft.currency ?? "")};
     const draftDate = ${JSON.stringify(draft.date ?? "")};
+    const canMarkReadyWithoutSourceAccount = ${!draft.duplicateRisk && !draft.hasUncertainty && hasValidNonSourceFields ? "true" : "false"};
+    const canResolveWithoutSourceAccount = ${draft.hasUncertainty && hasValidNonSourceFields ? "true" : "false"};
+    const sourceAccountIsLocked = ${isLocked ? "true" : "false"};
     let pendingDestinationAccountId = '';
 
     function setLoading(id, loading) {
@@ -422,7 +430,6 @@ export function renderDraftDetailPage(props: RenderProps): string {
         { id: 'amount', name: 'amount' },
         { id: 'currency', name: 'currency' },
         { id: 'merchant', name: 'merchant' },
-        { id: 'source_account_name', name: 'source_account_name' },
         { id: 'category', name: 'category' },
       ];
       try {
@@ -493,6 +500,98 @@ export function renderDraftDetailPage(props: RenderProps): string {
       }
     }
 
+    function setSourceAccountStatus(message, isError) {
+      const status = document.getElementById('sourceAccountStatus');
+      if (status) {
+        status.textContent = message;
+        status.className = isError ? 'banner banner-error' : 'help-text';
+      }
+    }
+
+    function updateMarkReadyAvailability() {
+      const select = document.getElementById('source_account_id');
+      const button = document.getElementById('markReadyBtn');
+      if (button && select) button.disabled = !canMarkReadyWithoutSourceAccount || !select.value;
+      const resolveButton = document.getElementById('resolveUncertaintyBtn');
+      if (resolveButton && select) resolveButton.disabled = !canResolveWithoutSourceAccount || !select.value;
+    }
+
+    async function selectSourceAccount() {
+      const select = document.getElementById('source_account_id');
+      if (!select || !select.value) {
+        updateMarkReadyAvailability();
+        return;
+      }
+      select.disabled = true;
+      setSourceAccountStatus('Saving source account…', false);
+      try {
+        const res = await fetch('/drafts/' + draftId + '/source-account', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sourceAccountId: select.value })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          setSourceAccountStatus(data.message || 'Could not save source account.', true);
+          select.value = '';
+          return;
+        }
+        setSourceAccountStatus('Source account selected.', false);
+      } catch (e) {
+        setSourceAccountStatus('Could not save source account. Check Firefly and try again.', true);
+        select.value = '';
+      } finally {
+        select.disabled = false;
+        updateMarkReadyAvailability();
+      }
+    }
+
+    async function loadSourceAccounts() {
+      const select = document.getElementById('source_account_id');
+      if (!select || sourceAccountIsLocked) return;
+      const selectedId = select.dataset.selectedId || '';
+      try {
+        const res = await fetch('/drafts/' + draftId + '/source-accounts');
+        const data = await res.json();
+        const accounts = data && Array.isArray(data.accounts) ? data.accounts : [];
+        if (!res.ok || !data.ok) {
+          setSourceAccountStatus(data.message || 'Could not load Firefly accounts. Check Firefly is running and credentials are valid.', true);
+          select.innerHTML = '<option value="">Unable to load source accounts</option>';
+          return;
+        }
+        if (accounts.length === 0) {
+          setSourceAccountStatus('No Firefly asset accounts are available. Create one in Firefly before continuing.', true);
+          select.innerHTML = '<option value="">No source accounts available</option>';
+          return;
+        }
+        select.innerHTML = '<option value="">— Select source account —</option>';
+        accounts.forEach(function(account) {
+          const option = document.createElement('option');
+          option.value = String(account.id);
+          option.textContent = String(account.name);
+          select.appendChild(option);
+        });
+        if (selectedId) {
+          const hasSelected = accounts.some(function(account) { return String(account.id) === selectedId; });
+          if (!hasSelected) {
+            setSourceAccountStatus('Your previously selected source account no longer exists in Firefly. Choose another account.', true);
+          } else {
+            select.value = selectedId;
+            setSourceAccountStatus('Source account loaded.', false);
+          }
+        } else {
+          setSourceAccountStatus('Choose the Firefly account used for this expense.', false);
+        }
+        select.disabled = false;
+        select.addEventListener('change', selectSourceAccount);
+      } catch (e) {
+        select.innerHTML = '<option value="">Unable to load source accounts</option>';
+        setSourceAccountStatus('Could not load Firefly accounts. Check Firefly is running and credentials are valid.', true);
+      } finally {
+        updateMarkReadyAvailability();
+      }
+    }
+
     function setSyncLoading(loading) {
       const loadingEl = document.getElementById('syncLoading');
       if (loadingEl) loadingEl.style.display = loading ? 'block' : 'none';
@@ -549,7 +648,7 @@ export function renderDraftDetailPage(props: RenderProps): string {
           return;
         }
         if (!data.sourceAccount) {
-          showSyncError('No source account matched in Firefly. Check the source account name and try again.');
+          showSyncError('Selected source account no longer exists in Firefly. Choose another account and mark the draft ready again.');
           setSyncLoading(false);
           return;
         }
@@ -713,6 +812,7 @@ export function renderDraftDetailPage(props: RenderProps): string {
       }
     }
 
+    loadSourceAccounts();
     loadSyncOptions();
   </script>
 </body>

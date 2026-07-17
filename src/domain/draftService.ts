@@ -228,6 +228,7 @@ export async function parseSlipToDraftAsync(
       sourceIdentifier: parsedSlip.sourceIdentifier,
       sourceAccountHints: JSON.stringify(parsedSlip.sourceAccountHints),
       sourceAccountName: null,
+      sourceAccountId: null,
       category: null,
       reviewState,
       syncState: SyncState.Unsynced,
@@ -297,6 +298,7 @@ export function markDraftReady(
     currency: draft.currency,
     merchant: draft.merchant,
     sourceAccountName: draft.sourceAccountName,
+    sourceAccountId: draft.sourceAccountId,
     duplicateRisk: draft.duplicateRisk === 1,
     hasUncertainty: draft.hasUncertainty === 1,
   });

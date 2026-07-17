@@ -30,6 +30,7 @@ function readyDraft(
     sourceIdentifier: "REF001",
     sourceAccountHints: [],
     sourceAccountName: "SCB Savings",
+    sourceAccountId: "asset-1",
     category: "Groceries",
     reviewState: ReviewState.Ready,
     syncState: SyncState.Unsynced,

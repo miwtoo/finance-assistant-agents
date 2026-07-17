@@ -43,7 +43,7 @@ function isReady(d: DraftTransaction): boolean {
     !!d.amount &&
     !!d.currency &&
     !!d.merchant &&
-    !!d.sourceAccountName &&
+    !!d.sourceAccountId &&
     !!d.category &&
     !d.duplicateRisk
   );
